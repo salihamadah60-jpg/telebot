@@ -11,7 +11,7 @@ from config import (
     BOT_TOKEN,
     OWNER_ID,
     SESSIONS_DIR,
-    CHANNEL_NAMES,
+    CHANNEL_KEYS,
 )
 from database import (
     load_db,
@@ -145,15 +145,19 @@ async def make_ch_handler(event):
         return
 
     await event.respond(
-        "🔨 **جاري إنشاء القنوات الأرشيفية...**\n"
-        "سيتم إنشاء قناة خاصة لكل تصنيف طبي:",
+        "🔨 **جاري إنشاء قنوات الأرشيف الخمس...**\n\n"
+        "📢 قناة القنوات\n"
+        "👥 قناة المجموعات\n"
+        "💀 قناة الروابط المنتهية\n"
+        "🔐 قناة روابط الدعوة\n"
+        "📂 قناة المجلدات (Addlist)",
         parse_mode="md",
     )
     created = await create_archive_channels(db["accounts"][0], db, save_db)
 
-    lines = ["✅ **نتائج إنشاء القنوات:**\n"]
-    for cat, ch_id in created.items():
-        title = CHANNEL_NAMES.get(cat, cat)
+    lines = ["✅ **نتائج إنشاء القنوات الخمس:**\n"]
+    for key, ch_id in created.items():
+        title = CHANNEL_KEYS.get(key, key)
         status = f"✅ تم إنشاؤها (ID: `{ch_id}`)" if isinstance(ch_id, int) else f"⚠️ {ch_id}"
         lines.append(f"• **{title}**: {status}")
 

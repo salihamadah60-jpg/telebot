@@ -14,6 +14,7 @@ def load_db() -> dict:
         "progress": {
             "source_index": 0,
             "last_msg_id": 0,
+            "last_sorted_index": 0,
         },
         "stats": {
             "total_found": 0,

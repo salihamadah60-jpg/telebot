@@ -1,0 +1,751 @@
+═══════════════════════════════════════════════════════════════════════════════
+                    قائمة شاملة بجميع التخصصات الطبية والاختصارات
+═══════════════════════════════════════════════════════════════════════════════
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الأول: المسميات والدرجات الوظيفية
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【الأطباء】
+• طبيب - Physician - MD - Doctor
+• طبيب امتياز - Intern - Internship Physician - طبيب الامتياز
+• طبيب مقيم - Resident - R1 - R2 - R3 - R4 - Resident Physician
+• ممارس عام - General Practitioner - GP - ممارس عام
+• طبيب نائب - Registrar - Reg - مسجل
+• نائب أول - Senior Registrar - Sr. Reg - مسجل أول
+• أخصائي - Specialist - Sp.
+• استشاري - Consultant - Cons
+• طبيب زائر - Visiting Physician - Visitor
+• طالب طب - Medical Student - Med Student
+
+【الصيادلة】
+• صيدلي - Pharmacist - BPharm
+• صيدلي إكلينيكي - Clinical Pharmacist - PharmD
+• صيدلي استشاري - Consultant Pharmacist
+
+【التمريض】
+• فني تمريض - Nursing Technician - Nurse Tech
+• أخصائي تمريض - Nurse Specialist - RN - BSN
+• أخصائي أول تمريض - Senior Nurse Specialist - MSN - Nurse Practitioner
+
+【العلوم الطبية التطبيقية】
+• أخصائي مختبر - Lab Specialist
+• أخصائي أشعة - Radiology Specialist
+• فني مختبر - Lab Technician - Lab Tech
+• فني أشعة - Radiology Technician
+• مساعد صحي - Health Assistant
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الثاني: الطب الباطني وتخصصاته الدقيقة
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【التخصصات الرئيسية】
+• باطنة - Internal Medicine - General Medicine
+• باطنية - Internal Med - Medicine
+
+【تخصصات القلب والأوعية الدموية】
+• قلب - Cardiology - Cardio - Heart
+• كهرباء القلب - Electrophysiology - EP
+• قلب تداخلي - Interventional Cardiology
+• قسطرة قلبية - Cardiac Catheterization - Cath Lab
+• قسطرة - Catheterization
+• صمامات قلبية - Heart Valves
+• أمراض القلب - Heart Diseases
+
+【تخصصات الجهاز الهضمي والكبد】
+• جهاز هضمي - Gastroenterology - GI - Gastro
+• كبد - Hepatology - Liver
+• مناظير - Endoscopy
+• تنظير علوي - Upper Endoscopy
+• تنظير قولون - Colonoscopy
+• تنظير ERCP
+
+【تخصصات الغدد الصماء والسكري】
+• غدد صماء - Endocrinology - Endo
+• سكري - Diabetes - DM
+• هرمونات - Hormones
+• غدة درقية - Thyroid
+• سمنة - Obesity - Bariatric Medicine
+
+【تخصصات الكلى】
+• كلى - Nephrology - Nephro
+• غسيل كلى - Dialysis - Hemodialysis
+• زراعة كلى - Renal Transplant - Kidney Transplant
+• وظائف كلى - Renal Function - RFT
+
+【تخصصات الصدرية والتنفسية】
+• صدرية - Pulmonology - Chest Medicine
+• تنفسية - Respiratory Medicine
+• رئة - Lung
+• وظائف رئة - Pulmonary Function Test - PFT
+• انسداد رئوي مزمن - COPD
+• ربو - Asthma
+
+【تخصصات الأمراض المعدية】
+• معدية - Infectious Diseases - ID
+• فيروسات - Virology
+• بكتيريا - Bacteriology
+• مناعة - Immunology
+• مضادات حيوية - Antibiotics
+
+【تخصصات الروماتيزم والمناعة】
+• روماتيزم - Rheumatology - Rheum
+• مفاصل - Joints - Arthritis
+• مناعة ذاتية - Autoimmune Diseases
+• التهاب مفاصل - Arthritis
+• خشونة مفاصل - Osteoarthritis - OA
+
+【تخصصات الأورام والدم】
+• أورام - Oncology - Onco
+• سرطان - Cancer
+• كيماوي - Chemotherapy - Chemo
+• دم - Hematology - Hema
+• أمراض الدم - Blood Disorders
+• تخثر - Coagulation
+• صورة دم كاملة - CBC
+
+【تخصصات الأعصاب】
+• مخ وأعصاب - Neurology - Neuro
+• جلطة دماغية - Stroke - CVA
+• صرع - Epilepsy - Seizure
+• تخطيط أعصاب - EMG - Electromyography
+• تخطيط دماغ - EEG - Electroencephalography
+• أمراض عصبية - Neurological Diseases
+
+【تخصصات الشيخوخة】
+• طب المسنين - Geriatrics
+• شيخوخة - Aging
+• كبار السن - Elderly Care
+
+【تخصصات أخرى في الباطنة】
+• طب المراهقين - Adolescent Medicine
+• طب المستشفيات - Hospital Medicine
+• طب المفاصل والمناعة - Rheumatology & Immunology
+• طب النوم - Sleep Medicine
+• طب الألم - Pain Medicine
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الثالث: الجراحة وتخصصاتها الدقيقة
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【الجراحة العامة】
+• جراحة - Surgery
+• جراحة عامة - General Surgery - GS
+• جراحة المناظير - Laparoscopic Surgery
+• جراحة بالمنظار - Endoscopic Surgery
+• مرارة - Gallbladder
+• زائدة دودية - Appendectomy
+• فتق - Hernia
+• قولون - Colon Surgery
+
+【جراحة العظام】
+• عظام - Orthopedic Surgery - Ortho
+• مفاصل - Joints - Arthroplasty
+• كسر - Fracture - Trauma
+• عمود فقري - Spine Surgery
+• ديسك - Disc Herniation
+• إصابات ملاعب - Sports Medicine
+• منظار مفاصل - Arthroscopy
+
+【جراحة المخ والأعصاب】
+• جراحة مخ وأعصاب - Neurosurgery - Neuro Surg
+• دماغ - Brain Surgery
+• نخاع شوكي - Spinal Cord Surgery
+• أورام دماغية - Brain Tumors
+
+【جراحة القلب والصدر】
+• جراحة قلب - Cardiac Surgery - Heart Surgery
+• جراحة صدر - Thoracic Surgery
+• قسطرة قلبية - Cardiac Catheterization
+• CABG - Coronary Artery Bypass Graft
+• صمامات قلبية - Valve Replacement
+
+【جراحة المسالك البولية】
+• مسالك بولية - Urology
+• بروستاتا - Prostate
+• حصوات - Kidney Stones
+• منظار بولي - Ureteroscopy
+• تفتيت حصى - Lithotripsy
+
+【جراحة التجميل】
+• تجميل - Plastic Surgery
+• ترميم - Reconstructive Surgery
+• حروق - Burns
+• جراحة دقيقة - Microsurgery
+• تجميل الوجه - Facial Plastic Surgery
+
+【جراحة الأطفال】
+• جراحة أطفال - Pediatric Surgery - Peds Surg
+
+【جراحة الأوعية الدموية】
+• جراحة أوعية دموية - Vascular Surgery
+• شرايين - Arteries
+• دوالي - Varicose Veins
+• قسطرة شرايين - Angiography
+
+【جراحة الوجه والفكين】
+• جراحة وجه وفكين - Maxillofacial Surgery - OMFS - MaxFax
+
+【جراحة الغدد】
+• جراحة غدد - Endocrine Surgery
+• غدة درقية - Thyroid Surgery
+• غدة جار درقية - Parathyroid Surgery
+• غدة كظرية - Adrenal Surgery
+
+【جراحة اليد】
+• جراحة يد - Hand Surgery
+
+【جراحة الأورام】
+• جراحة أورام - Surgical Oncology
+
+【جراحة القولون والمستقيم】
+• جراحة قولون ومستقيم - Colorectal Surgery
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الرابع: طب الأطفال والنساء والولادة
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【طب الأطفال】
+• أطفال - Pediatrics - Peds
+• طب أطفال عام - General Pediatrics
+• حديثي الولادة - Neonatology
+• خدج - Premature - Preterm - NICU
+• عناية مركزة أطفال - PICU - Pediatric ICU
+• عناية مركزة حديثي الولادة - NICU - Neonatal ICU
+• قلب أطفال - Pediatric Cardiology
+• كلى أطفال - Pediatric Nephrology
+• أعصاب أطفال - Pediatric Neurology
+• جراحة أطفال - Pediatric Surgery
+• طب أطفال حرجة - Pediatric Critical Care
+
+【النساء والولادة】
+• نساء وولادة - Obstetrics & Gynecology - OBGYN - GYNE
+• توليد - Obstetrics
+• قابلة - Midwifery
+• عقم - Infertility
+• أطفال أنابيب - IVF - In Vitro Fertilization
+• طب الأجنة - Fetal Medicine
+• أورام نسائية - Gynecologic Oncology
+• مسالك بولية نسائية - Urogynecology
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الخامس: الطب الشرعي والسموم والوقائي وطب الأسرة
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【الطب الشرعي】
+• طب شرعي - Forensic Medicine - Forensics
+• جنائي - Criminal Medicine
+• مشرحة - Morgue - Autopsy
+• تحقيق جنائي - Criminal Investigation
+
+【علم السموم】
+• سموم - Toxicology
+• سموم إكلينيكية - Clinical Toxicology
+• سموم شرعية - Forensic Toxicology
+• جرعة زائدة - Overdose
+• تسمم - Poisoning
+
+【الطب الوقائي والصحة العامة】
+• طب وقائي - Preventive Medicine
+• صحة عامة - Public Health
+• وبائيات - Epidemiology
+• إحصاء حيوي - Biostatistics
+• تطعيمات - Vaccinations - Immunization
+• مكافحة العدوى - Infection Control
+
+【طب الأسرة والمجتمع】
+• طب أسرة - Family Medicine - FM
+• طب مجتمع - Community Medicine
+• رعاية أولية - Primary Care
+• رعاية صحية - Primary Healthcare
+
+【الطب المهني والبيئي】
+• طب مهني - Occupational Medicine
+• طب بيئة - Environmental Medicine
+• طب السفر - Travel Medicine
+• طب الطيران - Aviation Medicine
+• طب الغوص - Diving Medicine
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم السادس: طب الأسنان وتخصصاته
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【التخصصات الأساسية】
+• أسنان - Dentistry - Dental
+• طب أسنان عام - General Dentistry - GP Dentist
+• طبيب أسنان - Dentist
+
+【تخصصات طب الأسنان】
+• تقويم أسنان - Orthodontics - Ortho
+• علاج جذور - Endodontics - Endo
+• جراحة لثة - Periodontics - Perio
+• تعويضات أسنان - Prosthodontics - Prosth
+• طب أسنان أطفال - Pediatric Dentistry - Pedo
+• جراحة فم وفكين - Oral & Maxillofacial Surgery - OMFS
+• أشعة أسنان - Oral Radiology - Dental X-ray
+• طب فم - Oral Medicine
+• طب أسنان تجميلي - Esthetic Dentistry - Cosmetic Dentistry
+
+【المصطلحات التقنية】
+• حشوات - Fillings
+• تنظيف - Cleaning
+• سحب عصب - Root Canal Treatment - RCT
+• تيجان - Crowns
+• جسور - Bridges
+• طقم أسنان - Dentures
+• زراعة أسنان - Dental Implants - Implant
+• تقنية أسنان - Dental Technology
+• فني معمل أسنان - Dental Lab Technician
+• تبييض أسنان - Teeth Whitening
+• فينير - Veneers
+• Hollywood Smile
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم السابع: الصيدلة والمختبرات
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【الصيدلة】
+• صيدلة - Pharmacy
+• صيدلي - Pharmacist
+• صيدلة إكلينيكية - Clinical Pharmacy
+• علم الأدوية - Pharmacology
+• فارماكولوجي - Pharmacologist
+• صيدلة مجتمع - Community Pharmacy - Retail Pharmacy
+• صيدلة مستشفيات - Hospital Pharmacy
+• رقابة دوائية - Drug Control - Pharmacy Regulation
+• صيدلة صناعية - Industrial Pharmacy
+• كيمياء صيدلية - Pharmaceutical Chemistry
+• جودة أدوية - QA/QC - Quality Assurance/Quality Control
+
+【المختبرات الطبية】
+• مختبرات - Medical Laboratory - Lab
+• مختبر طبي - Medical Lab
+• تحاليل - Lab Tests
+
+【تخصصات المختبرات】
+• كيمياء حيوية - Clinical Biochemistry
+• أحياء دقيقة - Microbiology - Micro
+• علم أمراض الدم - Hematology
+• علم الأنسجة - Histology - Histopathology
+• علم الخلايا - Cytology
+• علم المناعة - Immunology - Serology
+• وراثة طبية - Medical Genetics - Genomics - DNA
+• بنك دم - Blood Bank
+• فصائل دم - Blood Groups
+
+【التحاليل المختبرية】
+• CBC - Complete Blood Count
+• وظائف كبد - Liver Function Test - LFT
+• وظائف كلى - Renal Function Test - RFT
+• سكر صائم - Fasting Blood Sugar - FBS
+• هرمونات - Hormones
+• زراعة - Culture
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الثامن: التخدير والعناية المركزة والخدمات المساندة
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【التخدير】
+• تخدير - Anesthesia
+• طبيب تخدير - Anesthesiologist
+• فني تخدير - Anesthesia Technician
+• أخصائي تخدير - Anesthesia Specialist
+• تخدير عام - General Anesthesia
+• تخدير نصفي - Spinal Anesthesia
+• تخدير موضعي - Local Anesthesia
+
+【العناية المركزة】
+• عناية مركزة - ICU - Intensive Care Unit - Critical Care
+• إنعاش - Resuscitation - CPR
+• طب طوارئ - Emergency Medicine - ER - ED - Emergency Room
+• مسعف - Paramedic - EMT
+• طب حشود - Mass Casualty Medicine
+
+【العلاج الطبيعي والتأهيل】
+• علاج طبيعي - Physical Therapy - PT
+• تأهيل طبي - Rehabilitation - Rehab
+• علاج وظيفي - Occupational Therapy - OT
+• علاج تنفسي - Respiratory Therapy - RT
+• علاج كلام - Speech Therapy
+• نطق وتخاطب - Speech & Language Pathology
+
+【السمعيات والبصريات】
+• سمعيات - Audiology - Hearing
+• بصريات - Optometry - Optician
+• نظارات - Eyeglasses
+• عدسات لاصقة - Contact Lenses
+
+【التغذية】
+• تغذية علاجية - Clinical Nutrition - Dietitian
+• تغذية - Nutrition
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم التاسع: الأشعة والفيزياء الطبية
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【التخصصات الإشعاعية】
+• أشعة - Radiology
+• أشعة تشخيصية - Diagnostic Radiology
+• أشعة مقطعية - CT Scan - Computed Tomography
+• رنين مغناطيسي - MRI - Magnetic Resonance Imaging
+• أشعة صوتية - Ultrasound - Sonar - Sonography
+• طب نووي - Nuclear Medicine
+• أشعة علاجية - Radiation Therapy - Radiotherapy
+
+【الفيزياء الطبية】
+• فيزياء طبية - Medical Physics
+• تقنية طبية حيوية - Biomedical Technology
+• صيانة أجهزة طبية - Biomedical Equipment Maintenance
+• هندسة طبية - Biomedical Engineering
+
+【التقنيات الطبية】
+• أجهزة طبية - Medical Devices
+• تقنية طبية - Medical Technology
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم العاشر: اختبارات التراخيص والزمالات
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【الاختبارات السعودية】
+• SMLE - Saudi Medical Licensing Exam - السعودي
+• SLE - Saudi Licensing Exam
+• SDLE - Saudi Dental Licensing Exam
+• SPLE - Saudi Pharmacy Licensing Exam
+• SNLE - Saudi Nursing Licensing Exam
+• SLES - Saudi Licensing Exam for Specialists
+• SCFHS - Saudi Commission for Health Specialties - الهيئة السعودية
+• ممارس بلس - Mumaris Plus
+
+【اختبارات دول الخليج】
+• DHA - Dubai Health Authority - دبي
+• HAAD - Health Authority Abu Dhabi - أبوظبي
+• DOH - Department of Health - أبوظبي
+• MOH - Ministry of Health - الإمارات
+• OMSB - Oman Medical Specialty Board - عمان
+• QCHP - Qatar Council for Healthcare Practitioners - قطر
+• NHRA - National Health Regulatory Authority - البحرين
+• KMLE - Kuwait Medical Licensing Exam - الكويت
+
+【الاختبارات الدولية】
+• USMLE - United States Medical Licensing Exam - الأمريكي
+• PLAB - Professional and Linguistic Assessment Board - البريطاني
+• UKMLA - UK Medical Licensing Assessment
+• MCCQE - Medical Council of Canada Exam - الكندي
+• AMC - Australian Medical Council Exam - الأسترالي
+• MRCP - Membership of Royal College of Physicians - زمالة بريطانية باطنة
+• MRCS - Membership of Royal College of Surgeons - زمالة بريطانية جراحة
+• OET - Occupational English Test
+• IELTS - International English Language Testing System
+• NEET PG - National Eligibility cum Entrance Test - الهندي
+
+【أنظمة الاختبارات】
+• برومترك - Prometric
+• داتا فلو - DataFlow
+• تصنيف مهني - Professional Classification
+• رخصة طبية - Medical License
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الحادي عشر: الاختصارات الطبية A-Z
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【A】
+• A/P - Assessment and Plan
+• ABG - Arterial Blood Gas
+• ACEI - ACE Inhibitors
+• ACLS - Advanced Cardiac Life Support
+• ADL - Activities of Daily Living
+• AF/AFib - Atrial Fibrillation
+• AKA - Above Knee Amputation
+• AMI - Acute Myocardial Infarction
+• ANA - Antinuclear Antibody
+• ABG - Arterial Blood Gas
+
+【B】
+• BKA - Below Knee Amputation
+• BMI - Body Mass Index
+• BP - Blood Pressure
+• BPH - Benign Prostatic Hyperplasia
+• BUN - Blood Urea Nitrogen
+• Bx - Biopsy
+
+【C】
+• C/O - Complains Of
+• CABG - Coronary Artery Bypass Graft
+• CAD - Coronary Artery Disease
+• CBC - Complete Blood Count
+• CC - Chief Complaint
+• CHF - Congestive Heart Failure
+• CNS - Central Nervous System
+• COPD - Chronic Obstructive Pulmonary Disease
+• CPAP - Continuous Positive Airway Pressure
+• CPR - Cardiopulmonary Resuscitation
+• CT - Computed Tomography
+• CVA - Cerebrovascular Accident
+
+【D】
+• D/Dx - Differential Diagnosis
+• DM - Diabetes Mellitus
+• DNR - Do Not Resuscitate
+• Dx - Diagnosis
+
+【E】
+• ECG/EKG - Electrocardiogram
+• ECHO - Echocardiogram
+• EEG - Electroencephalogram
+• EMG - Electromyogram
+• ENT - Ear, Nose, Throat
+• ER/ED - Emergency Room/Emergency Department
+• ESR - Erythrocyte Sedimentation Rate
+• ESRD - End Stage Renal Disease
+
+【F】
+• FBS - Fasting Blood Sugar
+• FUO - Fever of Unknown Origin
+
+【G】
+• GERD - Gastroesophageal Reflux Disease
+• GI - Gastrointestinal
+• GU - Genitourinary
+
+【H】
+• H&P - History and Physical
+• HEENT - Head, Eyes, Ears, Nose, Throat
+• Hgb/Hb - Hemoglobin
+• HTN - Hypertension
+• Hx - History
+
+【I】
+• I&D - Incision and Drainage
+• ICU - Intensive Care Unit
+• IM - Intramuscular
+• INR - International Normalized Ratio
+• IV - Intravenous
+
+【L】
+• LBP - Low Back Pain
+• LFT - Liver Function Test
+• LMP - Last Menstrual Period
+
+【M】
+• MI - Myocardial Infarction
+• MRI - Magnetic Resonance Imaging
+
+【N】
+• N/V - Nausea and Vomiting
+• NG/NGT - Nasogastric Tube
+• NPO - Nothing by Mouth
+• NSAIDs - Non-Steroidal Anti-Inflammatory Drugs
+
+【O】
+• OA - Osteoarthritis
+• OR - Operating Room
+• OSCE - Objective Structured Clinical Examination
+• OT - Occupational Therapy
+
+【P】
+• P - Pulse
+• PE - Physical Exam/Pulmonary Embolism
+• PO - Per Os (By Mouth)
+• PRN - Pro Re Nata (As Needed)
+• PT - Physical Therapy/Prothrombin Time
+
+【R】
+• RFT - Renal Function Test
+• ROM - Range of Motion
+• RR - Respiratory Rate
+• Rx - Prescription
+
+【S】
+• SOB - Shortness of Breath
+• STAT - Immediately
+
+【T】
+• T - Temperature
+• T/O - Telephone Order
+• Tx - Treatment
+
+【U】
+• UA - Urinalysis
+• URI - Upper Respiratory Infection
+• UTI - Urinary Tract Infection
+
+【V】
+• VSS - Vital Signs Stable
+
+【W】
+• WBC - White Blood Cell
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الثاني عشر: الوظائف والإدارة الصحية
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【التوظيف】
+• وظائف صحية - Healthcare Jobs
+• توظيف - Recruitment - Hiring
+• شاغر - Vacancy
+• عقود - Contracts
+• تشغيل ذاتي - Locum
+• رواتب - Salary
+• مقابلة - Interview
+
+【الإدارة الصحية】
+• إدارة مستشفيات - Hospital Management
+• جودة صحية - Healthcare Quality
+• CBAHI - Saudi Central Board for Accreditation of Healthcare Institutions
+• JCI - Joint Commission International
+• معايير - Standards
+• سباهي - CBAHI
+
+【المعلوماتية الصحية】
+• معلوماتية صحية - Health Informatics
+• سجل طبي - Medical Record - HIS
+• نظام صحي - Health Information System
+
+【التأمين والترميز】
+• تأمين طبي - Health Insurance
+• موافقات - Approvals
+• مطالبات - Claims
+• ترميز طبي - Medical Coding
+• ICD-10 - International Classification of Diseases
+• CPT - Current Procedural Terminology
+
+【السكرتارية الطبية】
+• سكرتارية طبية - Medical Secretary
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الثالث عشر: مصطلحات الدراسة والاختبارات
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【المذاكرة والتحضير】
+• تجميعات - Recalls
+• تسريبات - Leaks
+• أسئلة - Questions
+• مراجع - References
+• ملفات - Files
+• درايف - Drive - Google Drive
+• محاضرات - Lectures
+• ملخصات - Summaries - Notes
+• نوتس - Notes
+• قروب مذاكرة - Study Group
+
+【الاختبارات العملية】
+• كيسات - Clinical Cases
+• حالات سريرية - Clinical Cases
+• أوسكي - OSCE - Objective Structured Clinical Examination
+• فيفا - VIVA - Oral Exam
+• بنك أسئلة - Question Bank - QBank
+• UWorld
+• MCQ - Multiple Choice Questions
+• اختبار تجريبي - Mock Exam - Practice Test
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الرابع عشر: التخصصات الإضافية والفرعية
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【طب العيون】
+• عيون - Ophthalmology - Eye
+• طب العيون - Eye Medicine
+• جراحة عيون - Eye Surgery
+
+【الأنف والأذن والحنجرة】
+• أنف وأذن وحنجرة - ENT - Ear, Nose, Throat - Otolaryngology
+
+【الجلدية】
+• جلدية - Dermatology - Skin
+
+【الأشعة التداخلية】
+• أشعة تداخلية - Interventional Radiology
+• قسطرة - Catheterization
+
+【طب النفسية】
+• نفسية - Psychiatry - Mental Health
+• صحة نفسية - Mental Health
+
+【الأشعة الشعاعية】
+• أشعة سينية - X-ray
+• أشعة - Radiology
+
+【العلاج الطبيعي المتخصص】
+• علاج طبيعي رياضي - Sports Physical Therapy
+• علاج طبيعي عصبي - Neurological Physical Therapy
+• علاج طبيعي أطفال - Pediatric Physical Therapy
+
+【التمريض المتخصص】
+• تمريض قلب - Cardiac Nursing
+• تمريض أورام - Oncology Nursing
+• تمريض عناية مركزة - Critical Care Nursing
+• تمريض طوارئ - Emergency Nursing
+
+【الصيدلة المتخصصة】
+• صيدلة أورام - Oncology Pharmacy
+• صيدلة أطفال - Pediatric Pharmacy
+• صيدلة نووية - Nuclear Pharmacy
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+القسم الخامس عشر: الوظائف والمهن الصحية
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【الأطباء والجراحون】
+• طبيب جراح - Surgeon
+• طبيب باطنية - Internist
+• طبيب أطفال - Pediatrician
+• طبيب نساء - Gynecologist
+• طبيب توليد - Obstetrician
+• طبيب أسنان - Dentist
+• طبيب عيون - Ophthalmologist
+• طبيب أنف وأذن - ENT Specialist
+• طبيب جلدية - Dermatologist
+• طبيب نفسي - Psychiatrist
+
+【الصيادلة】
+• صيدلي إكلينيكي - Clinical Pharmacist
+• صيدلي صناعي - Industrial Pharmacist
+
+【التمريض】
+• ممرض - Nurse
+• ممرض مسجل - Registered Nurse - RN
+• ممرض ممارس - Nurse Practitioner
+• ممرض مساعد - Licensed Practical Nurse - LPN
+
+【المختبرات】
+• فني مختبر - Lab Technician
+• أخصائي مختبر - Lab Specialist
+• فني بنك دم - Blood Bank Technician
+
+【الأشعة】
+• فني أشعة - Radiology Technician
+• أخصائي أشعة - Radiology Technologist
+• فني أشعة مقطعية - CT Technologist
+• فني رنين مغناطيسي - MRI Technologist
+• فني أشعة صوتية - Ultrasound Technologist - Sonographer
+
+【التخدير】
+• فني تخدير - Anesthesia Technician
+• ممرض تخدير - Nurse Anesthetist
+
+【العلاج الطبيعي】
+• أخصائي علاج طبيعي - Physical Therapist
+• أخصائي علاج وظيفي - Occupational Therapist
+• أخصائي علاج تنفسي - Respiratory Therapist
+• أخصائي نطق - Speech Therapist
+
+【التغذية】
+• أخصائي تغذية - Dietitian - Nutritionist
+
+【السمعيات والبصريات】
+• أخصائي سمعيات - Audiologist
+• أخصائي بصريات - Optometrist
+• فني نظارات - Optician
+
+【الإدارة الصحية】
+• مدير مستشفى - Hospital Administrator
+• مراجع طبي - Medical Auditor
+• مرمز طبي - Medical Coder
+
+【الهندسة الطبية】
+• مهندس طبي - Biomedical Engineer
+• فني أجهزة طبية - Biomedical Technician
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                              نهاية القائمة الشاملة
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

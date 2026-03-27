@@ -1,32 +1,27 @@
 import re
-from config import CATEGORIES
+from config import SPECIALTIES
 
 
-def classify(title: str, bio: str, username: str) -> str:
+def classify_specialty(title: str, bio: str, username: str = "") -> str:
+    """
+    Score every specialty by keyword hits in title+bio+username.
+    Returns the highest-scoring specialty key, or 'طب_عام' as fallback.
+    """
     combined = f"{title} {bio} {username}".lower()
+    scores: dict[str, int] = {}
 
-    hierarchy = [
-        "أسنان",
-        "جراحة",
-        "صيدلة",
-        "مختبرات",
-        "أطفال",
-        "تمريض",
-        "ابتعاث_ومنح",
-        "كتب_ومراجع",
-        "استفسارات_ونقاشات",
-        "طب_بشري_عام",
-    ]
+    for specialty, keywords in SPECIALTIES.items():
+        hits = sum(1 for kw in keywords if kw.lower() in combined)
+        if hits > 0:
+            scores[specialty] = hits
 
-    for cat in hierarchy:
-        keywords = CATEGORIES.get(cat, [])
-        if any(kw in combined for kw in keywords):
-            return cat
-
-    return "طب_بشري_عام"
+    if not scores:
+        return "طب_عام"
+    return max(scores, key=lambda k: scores[k])
 
 
 def detect_link_type(entity) -> str:
+    """Return the Telegram entity type as a string key."""
     if entity is None:
         return "unknown"
     if getattr(entity, "bot", False):
@@ -39,6 +34,7 @@ def detect_link_type(entity) -> str:
 
 
 def extract_links_from_text(text: str) -> list:
+    """Extract all t.me links from a block of text."""
     if not text:
         return []
     pattern = r"(?:https?://)?(?:t\.me|telegram\.me)/[\+a-zA-Z0-9_/]+"
@@ -53,7 +49,7 @@ def extract_links_from_text(text: str) -> list:
 
 
 def is_addlist_link(link: str) -> bool:
-    return "/addlist/" in link or "addlist/" in link
+    return "/addlist/" in link
 
 
 def is_invite_link(link: str) -> bool:
