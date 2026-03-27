@@ -1,16 +1,16 @@
 """
-Sorter — parallel link inspection and dispatch to one of the 5 archive channels.
+Sorter — parallel link inspection and dispatch to one of the 6 archive channels.
 
 Channel routing:
   - addlist links  → "addlist"
+  - bot entities   → "bots"
   - invite links   → "invite"
   - channel type   → "channels"
   - group type     → "groups"
   - broken/private → "broken"
 
 Inside each message the detected medical specialty is also reported.
-Parallel processing: up to MAX_CONCURRENT links inspected simultaneously,
-with a per-account asyncio.Semaphore to stay inside anti-ban limits.
+Parallel processing: up to MAX_CONCURRENT links inspected simultaneously.
 """
 
 import asyncio
@@ -26,6 +26,7 @@ from classifier import (
     detect_link_type,
     is_addlist_link,
     is_invite_link,
+    is_bot_entity,
 )
 from database import (
     is_seen,
@@ -47,7 +48,7 @@ from config import (
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Single-link inspection
+# Entity inspection
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def get_entity_info(client: TelegramClient, link: str) -> dict:
@@ -59,24 +60,25 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
             "reason": str(e),
             "link": link,
             "is_private": is_invite_link(link),
+            "entity": None,
         }
 
-    title = getattr(entity, "title", "بدون اسم")
+    title    = getattr(entity, "title", "") or getattr(entity, "first_name", "بدون اسم")
     username = getattr(entity, "username", "") or ""
-    bio = ""
+    bio      = ""
 
     try:
         if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
             full = await client(GetFullChannelRequest(entity))
-            bio = getattr(full.full_chat, "about", "") or ""
-        else:
+            bio  = getattr(full.full_chat, "about", "") or ""
+        elif not getattr(entity, "bot", False):
             full = await client(GetFullChatRequest(entity))
-            bio = getattr(full.full_chat, "about", "") or ""
+            bio  = getattr(full.full_chat, "about", "") or ""
     except Exception:
         pass
 
     link_type = detect_link_type(entity)
-    members = getattr(entity, "participants_count", None)
+    members   = getattr(entity, "participants_count", None)
 
     joined = False
     try:
@@ -86,24 +88,23 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
         pass
 
     return {
-        "ok": True,
-        "title": title,
-        "username": username,
-        "bio": bio,
+        "ok":        True,
+        "title":     title,
+        "username":  username,
+        "bio":       bio,
         "link_type": link_type,
-        "members": members,
-        "joined": joined,
+        "members":   members,
+        "joined":    joined,
+        "entity":    entity,
     }
 
 
 async def expand_addlist(client: TelegramClient, link: str) -> list[str]:
     try:
-        slug = link.split("addlist/")[-1].strip("/")
+        slug   = link.split("addlist/")[-1].strip("/")
         invite = await client(GetChatlistInviteRequest(slug=slug))
         result = []
-        peers = getattr(invite, "peers", []) + getattr(
-            invite, "already_peer_chats", []
-        )
+        peers  = getattr(invite, "peers", []) + getattr(invite, "already_peer_chats", [])
         for peer in peers:
             uname = getattr(peer, "username", None)
             if uname:
@@ -114,32 +115,36 @@ async def expand_addlist(client: TelegramClient, link: str) -> list[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Route a link to one of the 5 channel keys
+# Channel routing logic
 # ─────────────────────────────────────────────────────────────────────────────
 
-def route_to_channel(link: str, info: dict, is_addlist: bool) -> str:
-    if is_addlist:
+def route_to_channel(link: str, info: dict, is_add: bool) -> str:
+    if is_add:
         return "addlist"
-    if is_invite_link(link):
-        return "invite"
     if not info.get("ok"):
         return "broken"
+    entity = info.get("entity")
+    if entity and is_bot_entity(entity):
+        return "bots"
+    if is_invite_link(link):
+        return "invite"
     link_type = info.get("link_type", "")
     if link_type == "channel":
         return "channels"
-    return "groups"  # supergroup, group, bot all go to groups
+    return "groups"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Build the report message
+# Report builder
 # ─────────────────────────────────────────────────────────────────────────────
 
 _CHANNEL_LABELS = {
-    "channels":  "📢 قناة",
-    "groups":    "👥 مجموعة",
-    "broken":    "💀 منتهي/خاص",
-    "invite":    "🔐 رابط دعوة",
-    "addlist":   "📂 مجلد",
+    "channels": "📢 قناة",
+    "groups":   "👥 مجموعة",
+    "broken":   "💀 منتهي/خاص",
+    "invite":   "🔐 رابط دعوة",
+    "addlist":  "📂 مجلد",
+    "bots":     "🤖 بوت",
 }
 
 _TYPE_LABELS = {
@@ -170,11 +175,11 @@ def build_report(
             f"**بواسطة:** `{account_name}`"
         )
 
-    type_label = _TYPE_LABELS.get(info.get("link_type", ""), "❓ غير محدد")
-    joined_label = "نعم ✅" if info.get("joined") else "لا ❌"
-    members = info.get("members")
+    type_label    = _TYPE_LABELS.get(info.get("link_type", ""), "❓ غير محدد")
+    joined_label  = "نعم ✅" if info.get("joined") else "لا ❌"
+    members       = info.get("members")
     members_label = f"{members:,}" if members is not None else "غير متاح"
-    bio_text = (info.get("bio") or "—")[:200]
+    bio_text      = (info.get("bio") or "—")[:200]
 
     lines = [
         f"📌 **الاسم:** {info.get('title', 'بدون اسم')}",
@@ -199,7 +204,7 @@ def build_report(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parallel processing core
+# Single-link parallel task
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def process_single_link(
@@ -211,51 +216,34 @@ async def process_single_link(
     bot_client,
     extra_links_collector: list,
 ) -> dict:
-    """
-    Inspect one link under the semaphore and dispatch it to the right channel.
-    Returns a result dict for stats bookkeeping.
-    """
     async with sem:
         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
-        result = {
-            "link": link,
-            "status": "ok",
-            "channel_key": None,
-            "error": None,
-        }
+        result = {"link": link, "status": "ok", "channel_key": None, "error": None}
 
         try:
             async with TelegramClient(session, API_ID, API_HASH) as client:
+                _is_add = is_addlist_link(link)
                 addlist_children: list[str] = []
-                _is_addlist = is_addlist_link(link)
 
-                if _is_addlist:
+                if _is_add:
                     addlist_children = await expand_addlist(client, link)
                     if addlist_children:
                         extra_links_collector.extend(addlist_children)
 
-                if is_invite_link(link) and not _is_addlist:
-                    info = {
-                        "ok": False,
-                        "reason": "رابط دعوة",
-                        "link": link,
-                        "is_private": True,
-                    }
-                    specialty = "—"
-                else:
-                    info = await get_entity_info(client, link)
-                    specialty = (
-                        classify_specialty(
-                            info.get("title", ""),
-                            info.get("bio", ""),
-                            info.get("username", ""),
-                        )
-                        if info.get("ok")
-                        else "—"
-                    )
+                info = await get_entity_info(client, link)
 
-                channel_key = route_to_channel(link, info, _is_addlist)
+                specialty = (
+                    classify_specialty(
+                        info.get("title", ""),
+                        info.get("bio", ""),
+                        info.get("username", ""),
+                    )
+                    if info.get("ok")
+                    else "—"
+                )
+
+                channel_key = route_to_channel(link, info, _is_add)
                 result["channel_key"] = channel_key
 
                 report = build_report(
@@ -282,11 +270,11 @@ async def process_single_link(
 
         except FloodWaitError as e:
             result["status"] = "flood"
-            result["error"] = f"FloodWait {e.seconds}s"
+            result["error"]  = f"FloodWait {e.seconds}s"
             await asyncio.sleep(e.seconds)
         except Exception as e:
             result["status"] = "error"
-            result["error"] = str(e)
+            result["error"]  = str(e)
             mark_seen(link)
 
         return result
@@ -305,13 +293,11 @@ async def run_sorter(
 ):
     raw_links = load_raw_links()
     if not raw_links:
-        await status_callback(
-            "⚠️ لا توجد روابط في القائمة الخام. قم بتشغيل الحصاد أولاً."
-        )
+        await status_callback("⚠️ لا توجد روابط في القائمة الخام. قم بتشغيل الحصاد أولاً.")
         return
 
     pending = [lnk for lnk in raw_links[start_from:] if not is_seen(lnk)]
-    total = len(pending)
+    total   = len(pending)
 
     if total == 0:
         await status_callback("✅ جميع الروابط تمت معالجتها مسبقاً.")
@@ -322,30 +308,25 @@ async def run_sorter(
         f"بـ **{MAX_CONCURRENT}** مسار متزامن..."
     )
 
-    sem = asyncio.Semaphore(MAX_CONCURRENT)
-    acc_idx = 0
-    op_count = 0
-    batch_size = MAX_CONCURRENT * 4  # process in reasonably-sized waves
+    sem        = asyncio.Semaphore(MAX_CONCURRENT)
+    acc_idx    = 0
+    op_count   = 0
+    batch_size = MAX_CONCURRENT * 4
     extra_links_collector: list[str] = []
-
     batches = [pending[i: i + batch_size] for i in range(0, len(pending), batch_size)]
 
     for batch_num, batch in enumerate(batches, 1):
-        # Rotate account every SWITCH_ACCOUNT_EVERY operations
         if op_count > 0 and op_count % SWITCH_ACCOUNT_EVERY < batch_size and len(accounts) > 1:
             acc_idx = (acc_idx + 1) % len(accounts)
             await status_callback(f"🔄 التبديل إلى الحساب: `{accounts[acc_idx]}`")
 
-        # Protective break every BREAK_EVERY operations
         if op_count > 0 and op_count % BREAK_EVERY < batch_size:
             await status_callback(
                 f"😴 استراحة وقائية {BREAK_DURATION // 60} دقيقة لتجنب الحظر..."
             )
             await asyncio.sleep(BREAK_DURATION)
 
-        session = accounts[acc_idx % len(accounts)]
-
-        # Resolve account name once per batch
+        session      = accounts[acc_idx % len(accounts)]
         account_name = session
         try:
             async with TelegramClient(session, API_ID, API_HASH) as _c:
@@ -356,7 +337,6 @@ async def run_sorter(
         except Exception:
             pass
 
-        # Fire all links in this batch in parallel
         tasks = [
             process_single_link(
                 sem, link, session, account_name,
@@ -367,9 +347,10 @@ async def run_sorter(
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         op_count += len(batch)
-        errors = sum(
+        errors    = sum(
             1 for r in results
-            if isinstance(r, Exception) or (isinstance(r, dict) and r.get("status") != "ok")
+            if isinstance(r, Exception)
+            or (isinstance(r, dict) and r.get("status") != "ok")
         )
 
         db["progress"]["last_sorted_index"] = start_from + op_count
@@ -383,13 +364,12 @@ async def run_sorter(
             f"أخطاء في الدفعة: {errors}"
         )
 
-    # If addlist links produced extra links, append and notify
     if extra_links_collector:
-        all_links = load_raw_links() + extra_links_collector
+        all_links    = load_raw_links() + extra_links_collector
         unique_extra = list(dict.fromkeys(extra_links_collector))
         save_raw_links(all_links)
         await status_callback(
-            f"📂 تم استخراج **{len(unique_extra)}** رابط إضافي من المجلدات وأُضيفت للقائمة."
+            f"📂 تم استخراج **{len(unique_extra)}** رابط إضافي من المجلدات."
         )
 
     await status_callback(

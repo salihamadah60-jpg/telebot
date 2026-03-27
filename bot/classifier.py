@@ -4,7 +4,7 @@ from config import SPECIALTIES
 
 def classify_specialty(title: str, bio: str, username: str = "") -> str:
     """
-    Score every specialty by keyword hits in title+bio+username.
+    Score every specialty by keyword hits in combined title+bio+username.
     Returns the highest-scoring specialty key, or 'طب_عام' as fallback.
     """
     combined = f"{title} {bio} {username}".lower()
@@ -54,3 +54,8 @@ def is_addlist_link(link: str) -> bool:
 
 def is_invite_link(link: str) -> bool:
     return "/+" in link or "/joinchat/" in link
+
+
+def is_bot_entity(entity) -> bool:
+    """Return True if the entity is a Telegram bot."""
+    return getattr(entity, "bot", False) is True

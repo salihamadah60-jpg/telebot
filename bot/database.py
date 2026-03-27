@@ -11,6 +11,7 @@ def load_db() -> dict:
         "accounts": [],
         "sources": [],
         "channels": {},
+        "joined_links": [],
         "progress": {
             "source_index": 0,
             "last_msg_id": 0,
