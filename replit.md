@@ -94,3 +94,38 @@ Generated React Query hooks and fetch client from the OpenAPI spec (e.g. `useHea
 ### `scripts` (`@workspace/scripts`)
 
 Utility scripts package. Each script is a `.ts` file in `src/` with a corresponding npm script in `package.json`. Run scripts via `pnpm --filter @workspace/scripts run <script>`. Scripts can import any workspace package (e.g., `@workspace/db`) by adding it as a dependency in `scripts/package.json`.
+
+## Telegram Bot (`bot/`)
+
+A standalone Python-based Telegram bot for intelligent medical link harvesting, filtering, and archiving.
+
+### Stack
+- **Language**: Python 3.x
+- **Telegram library**: Telethon (MTProto)
+- **Config**: python-dotenv
+- **Data storage**: JSON files
+
+### Bot Files
+- `bot/main.py` — Bot entry point, control panel with inline buttons
+- `bot/config.py` — API keys, keywords, channel names
+- `bot/classifier.py` — Hierarchical keyword classification engine
+- `bot/harvester.py` — Scrapes links from source groups
+- `bot/sorter.py` — Deep-inspects and sorts links into archive channels
+- `bot/account_manager.py` — Multi-account session management
+- `bot/channel_setup.py` — Auto-creates Telegram archive channels
+- `bot/database.py` — JSON data persistence, deduplication memory
+- `bot/requirements.txt` — Python dependencies
+
+### Documentation Files
+- `bot/HOW_THE_BOT_WORKS.md` — Complete Arabic guide on how the bot works
+- `bot/WHATS_MISSING.md` — What is not yet implemented / needs user input
+- `bot/README.md` — Setup guide
+
+### Running the Bot
+```bash
+cd bot
+pip install -r requirements.txt
+cp .env.example .env
+# Edit .env with your API_ID, API_HASH, BOT_TOKEN, OWNER_ID
+python main.py
+```
