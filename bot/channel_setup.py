@@ -7,11 +7,11 @@ from telethon.tl.functions.channels import (
     EditAdminRequest,
 )
 from telethon.tl.types import ChatAdminRights
-from config import API_ID, API_HASH, CHANNEL_KEYS
+from config import API_ID, API_HASH, CHANNEL_KEYS, OWNER_ID
 
 
 async def create_archive_channels(session: str, db: dict, save_db_fn) -> dict:
-    """Create the 6 archive channels and add ALL connected accounts as admins."""
+    """Create the 7 archive channels and add ALL connected accounts + owner as admins."""
     created = {}
     async with TelegramClient(session, API_ID, API_HASH) as client:
         for key, title in CHANNEL_KEYS.items():
@@ -34,10 +34,16 @@ async def create_archive_channels(session: str, db: dict, save_db_fn) -> dict:
             except Exception as e:
                 created[key] = f"فشل: {e}"
 
+        channels = db.get("channels", {})
+
         # Add all other connected sessions as admins
         other_sessions = [s for s in db.get("accounts", []) if s != session]
-        if other_sessions and db.get("channels"):
-            await _add_sessions_to_channels(client, other_sessions, db["channels"])
+        if other_sessions and channels:
+            await _add_sessions_to_channels(client, other_sessions, channels)
+
+        # Add the owner's personal Telegram account as admin to all channels
+        if channels and OWNER_ID:
+            await _add_owner_to_channels(client, OWNER_ID, channels)
 
     return created
 
@@ -113,3 +119,69 @@ async def _add_sessions_to_channels(
                 await asyncio.sleep(e.seconds)
             except Exception:
                 pass
+
+
+async def add_owner_to_channels(db: dict):
+    """Public entry point: add the owner to all existing channels using the first session."""
+    channels = db.get("channels", {})
+    accounts = db.get("accounts", [])
+    if not channels or not accounts or not OWNER_ID:
+        return
+    async with TelegramClient(accounts[0], API_ID, API_HASH) as client:
+        await _add_owner_to_channels(client, OWNER_ID, channels)
+
+
+async def _add_owner_to_channels(
+    admin_client: TelegramClient,
+    owner_id: int,
+    channels: dict,
+):
+    """Invite the owner's personal Telegram account as admin to all channels."""
+    admin_rights = ChatAdminRights(
+        change_info=True,
+        post_messages=True,
+        edit_messages=True,
+        delete_messages=True,
+        ban_users=False,
+        invite_users=True,
+        pin_messages=True,
+        add_admins=True,
+        manage_call=False,
+    )
+
+    try:
+        owner_entity = await admin_client.get_entity(owner_id)
+    except Exception:
+        return
+
+    for key, ch_id in channels.items():
+        if not isinstance(ch_id, int):
+            continue
+        try:
+            await admin_client(InviteToChannelRequest(
+                channel=ch_id,
+                users=[owner_entity],
+            ))
+            await asyncio.sleep(1)
+            await admin_client(EditAdminRequest(
+                channel=ch_id,
+                user_id=owner_entity,
+                admin_rights=admin_rights,
+                rank="مالك",
+            ))
+            await asyncio.sleep(1)
+        except UserAlreadyParticipantError:
+            # Already in channel — just make sure they're admin
+            try:
+                await admin_client(EditAdminRequest(
+                    channel=ch_id,
+                    user_id=owner_entity,
+                    admin_rights=admin_rights,
+                    rank="مالك",
+                ))
+            except Exception:
+                pass
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds)
+        except Exception:
+            pass

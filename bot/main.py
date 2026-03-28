@@ -24,7 +24,7 @@ from database import (
     load_raw_links,
 )
 from account_manager import AccountManager
-from channel_setup import create_archive_channels, add_account_to_channels
+from channel_setup import create_archive_channels, add_account_to_channels, add_owner_to_channels
 from harvester import harvest_sources
 from sorter import run_sorter
 from joiner import run_smart_joiner
@@ -392,8 +392,13 @@ async def make_ch_handler(event):
     if existing >= 7:
         await event.respond(
             f"✅ **القنوات السبع موجودة بالفعل!**\n\n"
-            + "\n".join(f"• {v}" for v in CHANNEL_KEYS.values()),
-            buttons=[[Button.inline("⏭️ إضافة مصادر ◄", b"add_src")], nav_row()],
+            + "\n".join(f"• {v}" for v in CHANNEL_KEYS.values())
+            + "\n\n💡 إذا لم تظهر القنوات في حسابك، اضغط الزر أدناه لإضافتك إليها.",
+            buttons=[
+                [Button.inline("➕ أضفني للقنوات كمسؤول", b"add_owner_to_ch")],
+                [Button.inline("⏭️ إضافة مصادر ◄", b"add_src")],
+                nav_row(),
+            ],
             parse_mode="md",
         )
         return
@@ -420,6 +425,42 @@ async def make_ch_handler(event):
         parse_mode="md",
     )
     await send_next_step_hint("sources", db)
+
+
+@bot.on(events.CallbackQuery(data=b"add_owner_to_ch"))
+@owner_only
+async def add_owner_to_ch_handler(event):
+    await event.answer("⏳ جاري إضافتك للقنوات...")
+
+    if not db.get("accounts"):
+        await event.respond(
+            "❌ لا يوجد حساب مرتبط. أضف حساباً أولاً.",
+            buttons=[nav_row()],
+        )
+        return
+
+    if not db.get("channels"):
+        await event.respond(
+            "❌ لا توجد قنوات مُنشأة بعد.",
+            buttons=[nav_row()],
+        )
+        return
+
+    await event.respond("⏳ جاري إضافتك كمسؤول في القنوات السبع، يرجى الانتظار...")
+
+    try:
+        await add_owner_to_channels(db)
+        await event.respond(
+            "✅ **تمت إضافتك كمسؤول في جميع القنوات السبع!**\n\n"
+            "ستجد القنوات الآن في قائمة محادثاتك.",
+            buttons=[[Button.inline("⏭️ إضافة مصادر ◄", b"add_src")], nav_row()],
+            parse_mode="md",
+        )
+    except Exception as e:
+        await event.respond(
+            f"⚠️ حدث خطأ: {e}",
+            buttons=[nav_row()],
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

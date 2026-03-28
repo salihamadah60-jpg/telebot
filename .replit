@@ -65,27 +65,6 @@ author = 56718866
 task = "packager.installForAll"
 
 [[workflows.workflow]]
-name = "push"
-mode = "sequential"
-author = 56718866
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "git config --global user.name \"salihamadah60\" git config --global user.email \"salih@gmail.com\""
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "git config --global user.email \"salih@gmail.com\""
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "git init"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "git add ."
-
-[[workflows.workflow]]
 name = "Project"
 mode = "parallel"
 author = "agent"
