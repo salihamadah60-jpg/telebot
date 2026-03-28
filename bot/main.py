@@ -52,6 +52,9 @@ def _start_health_server():
     thread.start()
     print(f"🌐 Health server on port {port}")
 
+# Start health server immediately at module load so Replit sees the port right away
+_start_health_server()
+
 db = load_db()
 
 bot = TelegramClient("bot_controller", API_ID, API_HASH)
@@ -668,7 +671,6 @@ async def confirm_clear_handler(event):
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def main():
-    _start_health_server()          # keeps process alive for Replit deployment
     await bot.start(bot_token=BOT_TOKEN)
     print("🤖 البوت يعمل... أرسل /start في تيليجرام للبدء.")
     await bot.run_until_disconnected()

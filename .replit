@@ -74,7 +74,7 @@ outputType = "console"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "cd bot && bash keep_alive.sh"
-waitForPort = 8080
+waitForPort = 3000
 
 [[workflows.workflow]]
 name = "push"
