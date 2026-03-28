@@ -68,12 +68,13 @@ name = "keep live"
 mode = "sequential"
 author = "agent"
 
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "cd bot && bash keep_alive.sh"
-
-[workflows.workflow.metadata]
-outputType = "console"
+waitForPort = 8080
 
 [[workflows.workflow]]
 name = "push"
@@ -95,6 +96,15 @@ args = "git init"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "git add ."
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "keep live"
 
 [agent]
 stack = "PNPM_WORKSPACE"
