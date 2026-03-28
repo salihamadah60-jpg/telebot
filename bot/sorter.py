@@ -19,7 +19,7 @@ from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
-from telethon.tl.functions.chatlists import GetChatlistInviteRequest
+from telethon.tl.functions.chatlists import CheckChatlistInviteRequest
 
 from classifier import (
     classify_specialty,
@@ -102,7 +102,7 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
 async def expand_addlist(client: TelegramClient, link: str) -> list[str]:
     try:
         slug   = link.split("addlist/")[-1].strip("/")
-        invite = await client(GetChatlistInviteRequest(slug=slug))
+        invite = await client(CheckChatlistInviteRequest(slug=slug))
         result = []
         peers  = getattr(invite, "peers", []) + getattr(invite, "already_peer_chats", [])
         for peer in peers:

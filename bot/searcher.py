@@ -40,7 +40,7 @@ from telethon.errors import (
     UsernameNotOccupiedError,
 )
 from telethon.tl.functions.contacts import SearchRequest
-from telethon.tl.functions.channels import GetSimilarChannelsRequest
+from telethon.tl.functions.channels import GetChannelRecommendationsRequest
 from telethon.tl.functions.channels import GetFullChannelRequest
 
 from config import API_ID, API_HASH, DELAY_MIN, DELAY_MAX
@@ -282,7 +282,7 @@ async def get_similar_channels(
             entity = await client.get_entity(link)
             if not (getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False)):
                 continue
-            result = await client(GetSimilarChannelsRequest(channel=entity))
+            result = await client(GetChannelRecommendationsRequest(channel=entity))
             for chat in result.chats:
                 lnk = _entity_to_link(chat)
                 if lnk and _is_new_link(lnk, known):
