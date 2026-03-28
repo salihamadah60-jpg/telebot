@@ -47,6 +47,7 @@ from config import (
     SWITCH_ACCOUNT_EVERY,
     MAX_CONCURRENT,
 )
+import state as sorter_ctrl
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -330,6 +331,20 @@ async def run_sorter(
     batches = [pending[i: i + batch_size] for i in range(0, len(pending), batch_size)]
 
     for batch_num, batch in enumerate(batches, 1):
+        # ── Check stop ────────────────────────────────────────────────────────
+        if sorter_ctrl.is_stopped():
+            await status_callback("⏹ **توقف الفرز** — تم الحفظ.")
+            return
+
+        # ── Check pause — wait until resumed or stopped ───────────────────────
+        if sorter_ctrl.is_paused():
+            await status_callback("⏸ **الفرز متوقف مؤقتاً** — اضغط ▶️ استئناف للمتابعة.")
+            while sorter_ctrl.is_paused():
+                await asyncio.sleep(2)
+            if sorter_ctrl.is_stopped():
+                await status_callback("⏹ **توقف الفرز** — تم الحفظ.")
+                return
+
         if op_count > 0 and op_count % SWITCH_ACCOUNT_EVERY < batch_size and len(accounts) > 1:
             acc_idx = (acc_idx + 1) % len(accounts)
             await status_callback(f"🔄 التبديل إلى الحساب: `{accounts[acc_idx]}`")

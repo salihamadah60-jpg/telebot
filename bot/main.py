@@ -29,6 +29,7 @@ from harvester import harvest_sources
 from sorter import run_sorter
 from joiner import run_smart_joiner
 from searcher import run_smart_discovery
+import state as sorter_ctrl
 
 db = load_db()
 bot = TelegramClient("bot_controller", API_ID, API_HASH)
@@ -154,69 +155,60 @@ def build_dashboard(db: dict) -> tuple[str, list]:
     flow   = get_flow_status(db)
     steps  = flow["steps"]
     nxt    = flow["next"]
-    raw    = flow["raw_count"]
     last   = flow["last_idx"]
 
-    # ── Progress bar ─────────────────────────────────────────────────────────
     done_count = sum(1 for s in steps if s["done"])
-    bar_filled = "█" * done_count
-    bar_empty  = "░" * (7 - done_count)
     pct        = int(done_count / 7 * 100)
+    bar        = "█" * done_count + "░" * (7 - done_count)
+
+    # ── Compact step list ─────────────────────────────────────────────────────
+    step_lines = []
+    for s in steps:
+        lock = "🔒" if s.get("locked") else ""
+        step_lines.append(f"{s['icon']} {s['n']}. {lock}{s['label']} — {s['detail']}")
 
     text = (
         "🏥 **نظام الفلترة الطبية الذكي**\n"
-        "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 **تقدمك العام:** {bar_filled}{bar_empty} {pct}%\n\n"
-        "**خارطة الطريق:**\n"
+        f"📊 {bar} {pct}%\n\n"
+        + "\n".join(step_lines)
     )
-
-    for s in steps:
-        locked = "🔒 " if s.get("locked") else ""
-        text += f"{s['icon']} **{s['n']}. {locked}{s['label']}**\n"
-        text += f"      ↳ _{s['detail']}_\n"
-
-    text += "\n━━━━━━━━━━━━━━━━━━━━━\n"
 
     if nxt:
         tip = {
-            "accounts": "ابدأ بربط حساب تيليجرام واحد على الأقل",
-            "channels":  "أنشئ قنوات الأرشيف السبع (تُنشأ تلقائياً)",
-            "sources":   "أضف مجموعات تيليجرام كمصادر للروابط",
-            "harvest":   "ابدأ الحصاد لجمع الروابط من المصادر",
-            "sort":      f"استأنف الفرز من الرابط {last+1:,}" if last > 0 else "ابدأ فرز الروابط وتصنيفها",
-            "discover":  "دع الذكاء الاصطناعي يكتشف روابط طبية جديدة",
-            "join":      "انضم إلى القنوات والمجموعات الطبية المصنفة",
+            "accounts": "ربط حساب تيليجرام",
+            "channels": "إنشاء قنوات الأرشيف",
+            "sources":  "إضافة مجموعات كمصادر",
+            "harvest":  "جمع الروابط من المصادر",
+            "sort":     f"استئناف من {last+1:,}" if last > 0 else "فرز وتصنيف الروابط",
+            "discover": "اكتشاف روابط طبية جديدة",
+            "join":     "الانضمام للقنوات الطبية",
         }.get(nxt["key"], "")
-        text += f"\n💡 **الخطوة التالية:** {nxt['label']}\n_{tip}_\n"
+        text += f"\n\n💡 **التالي:** {nxt['label']} — {tip}"
     else:
-        text += "\n🎉 **أحسنت! جميع الخطوات مكتملة.**\n"
+        text += "\n\n🎉 **جميع الخطوات مكتملة!**"
 
-    # ── Smart buttons ─────────────────────────────────────────────────────────
-    # Highlight the recommended next step with a special row
+    # ── Buttons ───────────────────────────────────────────────────────────────
     rows = []
 
-    # Next step highlight row
+    # Highlighted next step
     next_btn_map = {
-        "accounts": ("➕ ربط حساب جديد ◄",    b"add_acc"),
-        "channels": ("📺 إنشاء القنوات السبع ◄", b"make_ch"),
-        "sources":  ("🔗 إضافة مصدر ◄",         b"add_src"),
-        "harvest":  ("🌾 بدء الحصاد ◄",          b"harvest"),
-        "sort":     (("▶️ استئناف الفرز ◄" if last > 0 else "⚡ بدء الفرز ◄"), b"run_sort"),
-        "discover": ("🧠 اكتشاف ذكي ◄",          b"smart_discover"),
-        "join":     ("🤝 انضمام ذكي ◄",           b"smart_join"),
+        "accounts": ("➕ ربط حساب ◄",    b"add_acc"),
+        "channels": ("📺 إنشاء القنوات ◄", b"make_ch"),
+        "sources":  ("🔗 إضافة مصدر ◄",   b"add_src"),
+        "harvest":  ("🌾 بدء الحصاد ◄",    b"harvest"),
+        "sort":     ("▶️ استئناف الفرز ◄" if last > 0 else "⚡ بدء الفرز ◄", b"run_sort"),
+        "discover": ("🧠 اكتشاف ذكي ◄",    b"smart_discover"),
+        "join":     ("🤝 انضمام ذكي ◄",    b"smart_join"),
     }
     if nxt and nxt["key"] in next_btn_map:
         lbl, dat = next_btn_map[nxt["key"]]
         rows.append([Button.inline(lbl, dat)])
 
-    # Standard grid
     rows += [
-        [Button.inline("➕ ربط حساب",  b"add_acc"),  Button.inline("👤 الحسابات",  b"list_acc")],
-        [Button.inline("📺 القنوات",   b"make_ch"),  Button.inline("🔗 المصادر",   b"list_src")],
-        [Button.inline("✏️ إضافة مصدر",b"add_src"),  Button.inline("🌾 حصاد",      b"harvest")],
-        [Button.inline("⚡ فرز",       b"run_sort"), Button.inline("🧠 اكتشاف",    b"smart_discover")],
-        [Button.inline("🤝 انضمام",    b"smart_join"),Button.inline("📊 إحصائيات", b"stats")],
-        [Button.inline("🧹 مسح الذاكرة", b"clear_mem")],
+        [Button.inline("➕ حساب", b"add_acc"),   Button.inline("👤 حساباتي", b"list_acc"),  Button.inline("📊 إحصائيات", b"stats")],
+        [Button.inline("📺 قنوات", b"make_ch"),  Button.inline("🔗 مصادر",   b"list_src"),  Button.inline("✏️ أضف مصدر", b"add_src")],
+        [Button.inline("🌾 حصاد", b"harvest"),   Button.inline("⚡ فرز",     b"run_sort"),  Button.inline("🧠 اكتشاف",  b"smart_discover")],
+        [Button.inline("🤝 انضمام", b"smart_join"), Button.inline("🧹 مسح الذاكرة", b"clear_mem")],
     ]
 
     return text, rows
@@ -594,6 +586,14 @@ async def harvest_handler(event):
 # Step 5 — Sort
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _sort_control_buttons() -> list:
+    """Inline buttons shown while sorting is active."""
+    return [
+        [Button.inline("⏸ إيقاف مؤقت", b"sort_pause"), Button.inline("⏹ إيقاف نهائي", b"sort_stop")],
+        [Button.inline("🏠 القائمة الرئيسية", b"home")],
+    ]
+
+
 @bot.on(events.CallbackQuery(data=b"run_sort"))
 @owner_only
 async def run_sort_handler(event):
@@ -620,19 +620,18 @@ async def run_sort_handler(event):
         )
         return
 
+    sorter_ctrl.reset()
+
     start_from = db.get("progress", {}).get("last_sorted_index", 0)
     remaining  = len(raw) - start_from
     pct        = int(start_from / len(raw) * 100) if raw else 0
 
     await event.respond(
-        f"**⑤  الفرز الشامل**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 الإجمالي: **{len(raw):,}** رابط\n"
-        f"✅ تم فحصه: **{start_from:,}** ({pct}%)\n"
-        f"⏳ المتبقي: **{remaining:,}** رابط\n\n"
-        + ("🔄 **استئناف من حيث توقفنا...**" if start_from > 0 else "⚡ **بدء الفرز الشامل...**")
-        + "\n_ستصلك تحديثات دورية لكل دفعة._",
-        buttons=[nav_row(b"harvest")],
+        f"**⑤ الفرز الشامل**\n"
+        f"📊 الإجمالي: {len(raw):,} | ✅ تم: {start_from:,} ({pct}%) | ⏳ متبقي: {remaining:,}\n\n"
+        + ("🔄 استئناف من حيث توقفنا..." if start_from > 0 else "⚡ بدء الفرز الشامل...")
+        + "\n_ستصلك تحديثات دورية._",
+        buttons=_sort_control_buttons(),
         parse_mode="md",
     )
 
@@ -644,16 +643,58 @@ async def run_sort_handler(event):
         start_from=start_from,
     )
 
-    await bot.send_message(
-        OWNER_ID,
-        f"🎯 **اكتمل الفرز!**\n\n"
-        f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,}\n"
-        f"💀 تالفة: {db['stats'].get('total_broken', 0):,}\n"
-        f"📊 الإجمالي: {db['stats'].get('total_found', 0):,}",
+    if not sorter_ctrl.is_stopped():
+        await bot.send_message(
+            OWNER_ID,
+            f"🎯 **اكتمل الفرز!**\n"
+            f"✅ {db['stats'].get('total_sorted', 0):,} مرتبة | "
+            f"💀 {db['stats'].get('total_broken', 0):,} تالفة",
+            buttons=[
+                [Button.inline("🧠 اكتشاف ذكي ◄", b"smart_discover"),
+                 Button.inline("🤝 انضمام ذكي ◄",  b"smart_join")],
+                nav_row(),
+            ],
+            parse_mode="md",
+        )
+
+
+@bot.on(events.CallbackQuery(data=b"sort_pause"))
+@owner_only
+async def sort_pause_handler(event):
+    await event.answer("⏸ جاري الإيقاف المؤقت...")
+    sorter_ctrl.pause()
+    await event.respond(
+        "⏸ **الفرز متوقف مؤقتاً.**\nسيتوقف بعد انتهاء الدفعة الحالية.",
         buttons=[
-            [Button.inline("⏭️ اكتشاف ذكي ◄",    b"smart_discover")],
-            [Button.inline("⏭️ انضمام ذكي ◄",     b"smart_join")],
-            nav_row(b"harvest"),
+            [Button.inline("▶️ استئناف", b"sort_resume"), Button.inline("⏹ إيقاف نهائي", b"sort_stop")],
+            nav_row(),
+        ],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=b"sort_resume"))
+@owner_only
+async def sort_resume_handler(event):
+    await event.answer("▶️ جاري الاستئناف...")
+    sorter_ctrl.resume()
+    await event.respond(
+        "▶️ **تم استئناف الفرز.**",
+        buttons=_sort_control_buttons(),
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=b"sort_stop"))
+@owner_only
+async def sort_stop_handler(event):
+    await event.answer("⏹ جاري الإيقاف...")
+    sorter_ctrl.stop()
+    await event.respond(
+        "⏹ **تم إيقاف الفرز.**\nالتقدم محفوظ — يمكنك الاستئناف لاحقاً من حيث توقفت.",
+        buttons=[
+            [Button.inline("▶️ استئناف الفرز لاحقاً", b"run_sort")],
+            nav_row(),
         ],
         parse_mode="md",
     )
