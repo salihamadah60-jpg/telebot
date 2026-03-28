@@ -3,9 +3,11 @@ import re
 import asyncio
 import random
 import threading
+import functools
 
 from telethon import TelegramClient, events, Button
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, AlreadyInConversationError
+from telethon.tl.functions.updates import GetStateRequest
 
 from config import (
     API_ID,
@@ -40,6 +42,7 @@ bot = TelegramClient("bot_controller", API_ID, API_HASH)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def owner_only(func):
+    @functools.wraps(func)
     async def wrapper(event):
         if event.sender_id != OWNER_ID:
             msg = f"🚫 غير مصرح لك.\n\nهويتك: `{event.sender_id}`\nالمسموح به: `{OWNER_ID}`"
@@ -51,7 +54,22 @@ def owner_only(func):
                 except Exception:
                     pass
             return
-        await func(event)
+        try:
+            await func(event)
+        except AlreadyInConversationError:
+            try:
+                await event.answer("⚠️ هناك عملية جارية. أنهها أو انتظر.", alert=True)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                await event.answer("❌ حدث خطأ، حاول مجدداً.", alert=True)
+            except Exception:
+                pass
+            try:
+                await bot.send_message(OWNER_ID, f"❌ خطأ في {func.__name__}:\n{e}", parse_mode="md")
+            except Exception:
+                pass
     return wrapper
 
 
@@ -1040,8 +1058,32 @@ async def whoami_handler(event):
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Catch-all fallback — MUST be the last registered handler.
+# Answers any callback that no specific handler above matched,
+# so buttons never get stuck in a permanent loading state after restarts.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bot.on(events.CallbackQuery())
+async def fallback_callback_handler(event):
+    try:
+        await event.answer("🔄 أعد تشغيل البوت بـ /start", alert=False)
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
+
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
+    # Advance the update state so stale pending callbacks from while the bot
+    # was offline are not replayed and do not corrupt conversation state.
+    try:
+        await bot(GetStateRequest())
+    except Exception:
+        pass
     print(f"🤖 البوت يعمل... OWNER_ID={OWNER_ID} | أرسل /start في تيليجرام للبدء.")
     await bot.run_until_disconnected()
 
