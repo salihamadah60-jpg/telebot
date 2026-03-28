@@ -1,36 +1,50 @@
 """
-Smart Discovery Engine — finds new medical Telegram links using 5 methods:
+Smart Discovery Engine — finds new medical Telegram links using 8 methods:
 
   Method 1 — Keyword Search:
-    Uses contacts.SearchRequest with hundreds of medical Arabic/English queries
-    to discover channels, groups and bots directly from Telegram's index.
+    Uses contacts.SearchRequest with hundreds of medical Arabic/English queries.
 
   Method 2 — Similar Channels:
-    For every channel already in the archive, calls GetSimilarChannelsRequest
-    which is Telegram's own recommendation engine. Very high signal-to-noise.
+    Telegram's own recommendation engine (GetChannelRecommendationsRequest).
 
   Method 3 — Bio/Description Crawling:
-    Reads the bio/about of every known channel and extracts any t.me links
-    mentioned there (channels often link to sister channels).
+    Extracts t.me links from every known channel's about/bio section.
 
   Method 4 — Message Link Crawling:
-    Reads the latest N messages from every known source group and every
-    archive channel to extract t.me links posted there.
+    Reads recent messages from known sources and archive channels.
 
   Method 5 — Username Pattern Generation:
-    Takes known medical channel usernames and generates plausible variants
-    (suffixes like _sa, _ksa, _ar, _med, _doc, 2, _official …) then
-    tries to resolve each one via Telegram.
+    Generates GCC-specific username variants from known channels.
 
-All discovered links are deduplicated against raw_links.json and
-global_seen.txt, then appended to raw_links.json for sorting later.
+  Method 6 — Compound Query Matrix  ★ NEW
+    Cross-products GCC regulatory bodies × medical specialties to generate
+    highly targeted compound queries (e.g. "SCFHS Cardiology", "OMSB Nursing").
+
+  Method 7 — Hashtag Discovery  ★ NEW
+    Searches Telegram using hashtag-style queries (#DHA_Exam, #SMLE_Recall …).
+
+  Method 8 — Google Custom Search (optional)  ★ NEW
+    Uses Google's Custom Search JSON API to run site:t.me dorks and extract
+    group links from the open web. Requires GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX
+    environment variables (skipped silently if not set).
+
+All discovered links are:
+  • Deduplicated against raw_links.json and global_seen.txt
+  • Scored for engagement quality (activity_rate, unique_user_ratio)
+  • Filtered for scam red-flags before saving
+  • Appended to raw_links.json for sorting later
 """
 
 import asyncio
+import os
 import random
 import re
 import time
 from typing import Callable
+
+import urllib.request
+import urllib.parse
+import json
 
 from telethon import TelegramClient
 from telethon.errors import (
@@ -46,156 +60,314 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from config import API_ID, API_HASH, DELAY_MIN, DELAY_MAX
 from database import load_raw_links, save_raw_links, is_seen
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# Discovery search queries — optimised for Telegram's search index.
-# These are SHORT, high-recall strings, not the full SPECIALTIES keywords.
-# Arabic and English, covering every medical domain.
+# GCC Regulatory bodies — used in compound query matrix
+# ─────────────────────────────────────────────────────────────────────────────
+
+GCC_REGULATORS: list[str] = [
+    # Saudi Arabia
+    "SCFHS", "scfhs", "هيئة التخصصات", "الهيئة السعودية للتخصصات",
+    "SMLE", "SNLE", "SDLE", "SPLE", "mumaris", "ممارس بلس", "Mumaris Plus",
+    "Saudi Board", "البورد السعودي",
+    # UAE – Dubai
+    "DHA", "dha dubai", "Sheryan",
+    # UAE – Abu Dhabi
+    "DOH", "HAAD", "Malafi", "Pearson VUE",
+    # UAE – MOH
+    "MOH UAE", "وزارة صحة الإمارات",
+    # Qatar
+    "QCHP", "DHP Qatar", "MOPH Qatar",
+    # Oman
+    "OMSB", "OMRS", "Oman Medical",
+    # Bahrain
+    "NHRA", "BLE", "Munshat", "QuadraBay",
+    # Kuwait
+    "MOH Kuwait", "KMLE", "KIMS",
+    # Cross-GCC
+    "DataFlow", "داتا فلو", "Prometric", "برومترك",
+    "Prometric GCC", "DataFlow verification",
+]
+
+# Medical specialties — short forms for matrix queries
+_SPECIALTIES_SHORT: list[str] = [
+    "Cardiology", "قلب",
+    "Internal Medicine", "باطنة",
+    "Surgery", "جراحة",
+    "Orthopedic", "عظام",
+    "Neurosurgery", "جراحة مخ",
+    "Pediatrics", "أطفال",
+    "Neonatology", "حديثي الولادة",
+    "Obstetrics", "نساء وولادة",
+    "Gynecology",
+    "Dentistry", "أسنان",
+    "ENT", "أنف وأذن",
+    "Ophthalmology", "عيون",
+    "Dermatology", "جلدية",
+    "Psychiatry", "نفسية",
+    "Radiology", "أشعة",
+    "Pharmacy", "صيدلة",
+    "Nursing", "تمريض",
+    "Anesthesia", "تخدير",
+    "Emergency", "طوارئ",
+    "ICU", "عناية مركزة",
+    "Oncology", "أورام",
+    "Nephrology", "كلى",
+    "Gastroenterology", "هضمية",
+    "Endocrinology", "غدد صماء",
+    "Rheumatology", "روماتيزم",
+    "Pulmonology", "صدرية",
+    "Neurology", "أعصاب",
+    "Urology", "مسالك بولية",
+    "Physical Therapy", "علاج طبيعي",
+    "Laboratory", "مختبر",
+    "Family Medicine", "طب أسرة",
+    "Public Health", "صحة عامة",
+]
+
+# Academic & professional tiers
+_TIERS: list[str] = [
+    "GP", "General Practitioner", "طبيب عام",
+    "Specialist", "أخصائي",
+    "Consultant", "استشاري",
+    "Resident", "مقيم", "Intern", "امتياز",
+    "R1", "R2", "R3", "Fellow", "زمالة",
+    "MBBS", "MD",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core keyword list (Method 1)
 # ─────────────────────────────────────────────────────────────────────────────
 
 SEARCH_QUERIES: list[str] = [
     # ── General medical Arabic ───────────────────────────────────────────────
-    "طب", "طبي", "طبيب", "دكتور", "صحة", "مستشفى", "عيادة",
-    "أطباء", "طلاب طب", "كلية طب", "طب بشري",
-    "طب سعودي", "طب عربي", "طب خليجي",
+    "طب", "طبي", "طبيب", "أطباء", "دكتور", "دكاترة",
+    "صحة", "مستشفى", "عيادة", "طلاب طب", "كلية طب",
+    "طب بشري", "طب سعودي", "طب عربي", "طب خليجي",
     "روابط طبية", "قنوات طبية", "مجموعات طبية",
-    "تخصصات طبية", "التخصص الطبي",
+    "تخصصات طبية", "مجموعة أطباء",
 
     # ── Licensing exams ───────────────────────────────────────────────────────
-    "SMLE", "smle سعودي", "USMLE", "PLAB", "MRCP", "MRCS",
-    "MRCOG", "MRCPCH", "MRCGP", "DHA", "HAAD", "DOH", "OMSB",
-    "QCHP", "NHRA", "KMLE", "prometric", "برومترك",
+    "SMLE", "smle سعودي", "تجميعات smle", "ملفات smle",
+    "SNLE", "SDLE", "SPLE", "تجميعات SNLE",
+    "USMLE", "PLAB", "UKMLA", "MCCQE", "AMC Exam",
+    "MRCP", "MRCS", "MRCOG", "MRCPCH", "MRCGP",
+    "FRCSC", "FRCPC", "FACS", "FACP",
+    "DHA exam", "DHA prometric", "DHA recall",
+    "HAAD exam", "DOH exam", "DOH Abu Dhabi",
+    "QCHP exam", "Qatar prometric",
+    "OMSB exam", "Oman prometric",
+    "NHRA exam", "BLE Bahrain",
+    "KMLE Kuwait",
+    "Prometric", "برومترك", "Prometric recall",
     "هيئة التخصصات", "الهيئة السعودية للتخصصات",
     "scfhs", "mumaris", "ممارس بلس",
-    "تجميعات smle", "ملفات smle", "تجميعات طبية",
+    "تجميعات طبية", "تجميعات 2025",
+    "نقاط الهيئة", "ساعات الهيئة", "ساعات تعليمية",
+    "تصنيف مهني", "professional classification",
+    "DataFlow", "داتا فلو", "dataflow status",
+    "Primary Source Verification", "PSV",
+    "Mumaris Plus", "Sheryan", "Malafi", "OMRS", "KIMS", "Munshat",
+    "OET", "IELTS medical",
 
-    # ── Residency / Fellowship ────────────────────────────────────────────────
+    # ── Residency / Fellowship / Scholarship ──────────────────────────────────
     "residency", "fellowship", "ابتعاث", "زمالة", "منحة طبية",
     "إقامة طبية", "البورد السعودي", "بورد عربي",
-    "برنامج تدريبي", "تدريب طبي",
+    "Saudi Board", "Arab Board", "برنامج تدريبي", "تدريب طبي",
+    "internship", "طبيب امتياز", "امتياز طب",
+    "NRMP", "match day", "medical match",
+    "scholarship medical", "study abroad medical",
 
     # ── Internal Medicine ─────────────────────────────────────────────────────
     "باطنة", "internal medicine", "internist",
-    "قلب", "cardiology", "قلب وأوعية",
-    "كلى", "nephrology",
+    "قلب", "cardiology", "قلب وأوعية", "كهرباء قلب",
+    "كلى", "nephrology", "dialysis", "غسيل كلى",
     "كبد", "hepatology", "gastroenterology", "جهاز هضمي",
     "غدد صماء", "endocrinology", "سكري", "diabetes",
-    "رئة", "pulmonology", "صدرية",
+    "رئة", "pulmonology", "صدرية", "COPD", "asthma ربو",
     "أورام", "oncology", "hematology", "دم",
-    "أعصاب", "neurology", "مخ وأعصاب",
-    "روماتيزم", "rheumatology",
-    "معدية", "infectious diseases",
+    "أعصاب", "neurology", "مخ وأعصاب", "stroke جلطة",
+    "روماتيزم", "rheumatology", "مفاصل",
+    "معدية", "infectious diseases", "HIV", "TB سل",
 
     # ── Surgery ───────────────────────────────────────────────────────────────
     "جراحة", "surgery", "جراح",
-    "عظام", "orthopedic", "عظام ومفاصل",
+    "عظام", "orthopedic", "عظام ومفاصل", "كسور",
     "جراحة عامة", "general surgery",
-    "مسالك بولية", "urology",
+    "مسالك بولية", "urology", "بروستاتا",
     "جراحة مخ", "neurosurgery",
     "جراحة قلب", "cardiac surgery",
-    "تجميل", "plastic surgery",
+    "تجميل", "plastic surgery", "ترميم",
     "جراحة أطفال", "pediatric surgery",
     "أوعية دموية", "vascular surgery",
     "وجه وفكين", "maxillofacial", "omfs",
+    "جراحة أورام", "surgical oncology",
+    "laparoscopic", "منظار جراحي",
 
     # ── Pediatrics ────────────────────────────────────────────────────────────
     "أطفال", "pediatrics", "طب أطفال",
     "حديثي الولادة", "neonatology",
-    "NICU", "PICU",
-    "طفولة", "kids health",
+    "NICU", "PICU", "حضانة خدج",
+    "توحد", "autism", "ADHD فرط حركة",
 
     # ── Gynecology / Obstetrics ───────────────────────────────────────────────
     "نساء وولادة", "obstetrics", "gynecology", "obgyn",
-    "توليد", "عقم", "IVF", "IVF arabic",
-    "أمراض نسائية",
+    "توليد", "عقم", "IVF", "أطفال أنابيب",
+    "أمراض نسائية", "endometriosis",
 
     # ── Dentistry ─────────────────────────────────────────────────────────────
     "أسنان", "dentistry", "dental",
-    "تقويم أسنان", "orthodontics",
+    "تقويم أسنان", "orthodontics", "invisalign",
     "زراعة أسنان", "dental implants",
-    "هوليوود سمايل",
+    "هوليوود سمايل", "فينير veneers",
+    "علاج جذور", "root canal",
+    "SDLE dental",
 
     # ── ENT ───────────────────────────────────────────────────────────────────
     "أنف وأذن وحنجرة", "ENT", "otolaryngology",
-    "سمعيات", "audiology",
+    "سمعيات", "audiology", "زرع قوقعة cochlear",
 
     # ── Ophthalmology ─────────────────────────────────────────────────────────
     "عيون", "ophthalmology", "eye care",
     "شبكية", "retina", "LASIK", "ليزك",
+    "جلوكوما", "glaucoma", "كتاركت cataract",
 
     # ── Dermatology ───────────────────────────────────────────────────────────
     "جلدية", "dermatology", "skin",
     "تجميل جلد", "cosmetic dermatology",
+    "بهاق vitiligo", "صدفية psoriasis",
 
     # ── Psychiatry ────────────────────────────────────────────────────────────
     "نفسية", "psychiatry", "mental health",
-    "صحة نفسية", "psychology",
+    "صحة نفسية", "psychology", "اكتئاب depression",
+    "قلق anxiety", "وسواس OCD",
 
     # ── Pharmacy ─────────────────────────────────────────────────────────────
     "صيدلة", "pharmacy", "pharmacist",
     "صيدلة إكلينيكية", "clinical pharmacy",
+    "pharmacology", "دوائية",
 
     # ── Laboratory ───────────────────────────────────────────────────────────
-    "مختبرات طبية", "medical laboratory", "lab",
+    "مختبرات طبية", "medical laboratory", "lab medical",
     "تحاليل طبية", "microbiology", "أحياء دقيقة",
-    "بنك دم", "blood bank",
+    "بنك دم", "blood bank", "pathology",
 
     # ── Radiology ─────────────────────────────────────────────────────────────
-    "أشعة", "radiology", "MRI", "CT scan",
-    "رنين مغناطيسي", "أشعة مقطعية",
+    "أشعة", "radiology", "MRI رنين",
+    "CT scan أشعة مقطعية",
     "أشعة تداخلية", "interventional radiology",
-    "طب نووي", "nuclear medicine",
+    "طب نووي", "nuclear medicine", "ultrasound سونار",
 
     # ── Anesthesia & Emergency ────────────────────────────────────────────────
-    "تخدير", "anesthesia",
-    "عناية مركزة", "ICU", "critical care",
-    "طوارئ", "emergency medicine",
+    "تخدير", "anesthesia", "ICU",
+    "عناية مركزة", "critical care",
+    "طوارئ", "emergency medicine", "ATLS ACLS",
 
     # ── Nursing ───────────────────────────────────────────────────────────────
     "تمريض", "nursing", "nurse",
-    "تمريض سعودي", "SNLE",
+    "تمريض سعودي", "SNLE تمريض",
+    "أخصائي تمريض", "Nursing Specialist",
 
     # ── Allied Health ─────────────────────────────────────────────────────────
-    "علاج طبيعي", "physical therapy",
-    "تغذية علاجية", "clinical nutrition",
+    "علاج طبيعي", "physical therapy", "physiotherapy",
+    "تغذية علاجية", "clinical nutrition", "nutritionist",
     "صحة مهنية", "occupational health",
+    "تقنية مختبر", "medical technology",
+    "أشعة تشخيصية", "diagnostic radiography",
 
     # ── Family Medicine / Preventive ──────────────────────────────────────────
     "طب أسرة", "family medicine",
     "طب وقائي", "preventive medicine",
-    "صحة عامة", "public health",
-    "وبائيات", "epidemiology",
+    "صحة عامة", "public health", "وبائيات epidemiology",
 
-    # ── Books / Study ─────────────────────────────────────────────────────────
+    # ── Books / Study Resources ───────────────────────────────────────────────
     "كتب طبية", "medical books",
     "ملخصات طبية", "medical notes",
     "محاضرات طبية", "medical lectures",
-    "مراجع طبية",
+    "مراجع طبية", "UWorld", "Qbank طبي",
+    "First Aid USMLE", "Oxford Handbook",
+    "Amboss", "Passmedicine",
 
     # ── Jobs / Recruitment ───────────────────────────────────────────────────
     "وظائف طبية", "medical jobs",
     "وظائف صحية", "healthcare jobs",
-    "توظيف طبي",
+    "توظيف طبي", "medical recruitment",
+    "وظائف سعودية طبية", "وظائف إماراتية طبية",
 
-    # ── Arabic country-specific ───────────────────────────────────────────────
-    "طب سعودي", "طب مصري", "طب أردني", "طب عراقي",
-    "طب يمني", "طب ليبي", "طب سوري", "طب مغربي",
-    "طب إماراتي", "طب كويتي", "طب قطري", "طب بحريني",
-    "طب عُماني",
+    # ── Country-specific compound ─────────────────────────────────────────────
+    "أطباء السعودية", "أطباء الإمارات", "أطباء الكويت",
+    "أطباء قطر", "أطباء البحرين", "أطباء عمان",
+    "أطباء الرياض", "أطباء جدة", "أطباء دبي",
+    "أطباء أبوظبي", "تجمع أطباء الخليج",
+    "طب سعودي", "طب إماراتي", "طب كويتي",
+    "طب قطري", "طب بحريني", "طب عُماني",
+    "طب مصري", "طب أردني", "طب سوري",
+    "تجمع أطباء عمان", "جراحي الإمارات",
+
+    # ── Academic / Professional tiers ─────────────────────────────────────────
+    "Resident physician", "مقيم طب",
+    "Consultant specialist", "استشاري طب",
+    "طبيب امتياز", "Intern physician",
+    "Fellow medicine", "زميل أكاديمي",
 
     # ── Smart bots for medical ────────────────────────────────────────────────
     "medical bot", "بوت طبي",
     "smle bot", "pharmacy bot",
     "lab bot", "بوت تيليجرام طبي",
+    "qbank bot", "mcq bot",
 ]
 
-# Username suffixes to try when generating variants of known usernames
+# ─────────────────────────────────────────────────────────────────────────────
+# Hashtag queries (Method 7)
+# ─────────────────────────────────────────────────────────────────────────────
+
+HASHTAG_QUERIES: list[str] = [
+    "#SMLE", "#SMLE2025", "#SMLE_Recall", "#SMLE_تجميعات",
+    "#SNLE", "#SDLE", "#DHA_Exam", "#DHA_Recall",
+    "#DOH_Exam", "#HAAD_Exam", "#QCHP_Exam",
+    "#OMSB_Exam", "#NHRA_Exam", "#KMLE_Exam",
+    "#Prometric_Nursing", "#Prometric_KSA",
+    "#DataFlow", "#DataFlow_Status",
+    "#SCFHS", "#Mumaris_Plus", "#نقاط_الهيئة",
+    "#طب_سعودي", "#أطباء_السعودية", "#USMLE",
+    "#MRCP", "#PLAB", "#زمالة_طبية",
+    "#ابتعاث_طبي", "#وظائف_طبية",
+    "#Saudi_Board", "#Arab_Board",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GCC-specific username suffixes (Method 5 — expanded)
+# ─────────────────────────────────────────────────────────────────────────────
+
 _USERNAME_SUFFIXES = [
     "2", "_sa", "_ksa", "_ar", "_arabic", "_med", "_medical",
     "_doc", "_dr", "_health", "_official", "_channel", "_group",
     "_bot", "_links", "_saudi", "_arab", "_gulf", "_uae",
+    "_kw", "_ksa2", "_qatar", "_oman", "_bahrain",
+    "_gcc", "_scfhs", "_dha", "_omsb",
+    "_exam", "_prep", "_study", "_recall",
+    "_nursing", "_pharmacy", "_dental",
+    "2025", "_2025", "_new",
 ]
 
-# Link regex
+# ─────────────────────────────────────────────────────────────────────────────
+# Scam / fraud keyword detection
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCAM_KEYWORDS: list[str] = [
+    "guaranteed pass", "ضمان النجاح", "نجاح مضمون",
+    "شهادات بلا حضور", "شهادات مزورة", "تزوير شهادة",
+    "تسريب اختبار بمقابل", "أسئلة مسربة مدفوعة",
+    "شراء درجة", "بيع نتيجة", "رشوة اختبار",
+    "crypto payment", "bitcoin medical",
+    "whatsapp payment", "send money exam",
+    "fake certificate", "شهادة وهمية",
+    "upgrade results", "تعديل نتيجة",
+    "license without exam", "رخصة بدون اختبار",
+    "leaked bank", "بنك مسرب بمقابل",
+]
+
+# Link extraction regex
 _LINK_RE = re.compile(r"https?://t\.me/[\+a-zA-Z0-9_/]+")
 
 
@@ -223,7 +395,13 @@ def _entity_to_link(entity) -> str | None:
 
 
 async def _safe_sleep(seconds: float):
-    await asyncio.sleep(seconds)
+    await asyncio.sleep(max(0, seconds))
+
+
+def _has_scam_signals(text: str) -> bool:
+    """Return True if text contains fraud/scam red-flag keywords."""
+    tl = text.lower()
+    return any(kw.lower() in tl for kw in _SCAM_KEYWORDS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -238,9 +416,12 @@ async def search_by_keywords(
 ) -> list[str]:
     found: list[str] = []
 
-    queries = random.sample(SEARCH_QUERIES, min(len(SEARCH_QUERIES), 80))
+    queries = random.sample(SEARCH_QUERIES, min(len(SEARCH_QUERIES), 100))
 
     for i, query in enumerate(queries):
+        # Telegram rejects queries shorter than 3 chars
+        if len(query.strip()) < 3:
+            continue
         try:
             result = await client(SearchRequest(q=query, limit=limit_per_query))
             for chat in result.chats:
@@ -254,19 +435,19 @@ async def search_by_keywords(
         except Exception:
             pass
 
-        if i % 20 == 19:
+        if i % 25 == 24:
             await status_cb(
                 f"🔍 بحث بالكلمات المفتاحية: {i + 1}/{len(queries)} — اكتُشف {len(found)} رابط جديد"
             )
             await _safe_sleep(random.uniform(2.0, 4.0))
         else:
-            await _safe_sleep(random.uniform(0.8, 2.0))
+            await _safe_sleep(random.uniform(0.7, 1.8))
 
     return found
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Method 2 — Similar Channels (Telegram's own recommendation engine)
+# Method 2 — Similar Channels (Telegram recommendation engine)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def get_similar_channels(
@@ -336,7 +517,7 @@ async def crawl_bios(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Method 4 — Message Link Crawling (from archive channels & source groups)
+# Method 4 — Message Link Crawling
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def crawl_messages(
@@ -350,7 +531,6 @@ async def crawl_messages(
 
     for link in source_links:
         try:
-            count = 0
             async for msg in client.iter_messages(link, limit=msgs_per_chat):
                 text = (msg.text or "") + (
                     getattr(getattr(msg, "media", None), "caption", "") or ""
@@ -360,7 +540,6 @@ async def crawl_messages(
                     if _is_new_link(lnk, known):
                         found.append(lnk)
                         known.add(lnk.lower())
-                count += 1
         except FloodWaitError as e:
             await _safe_sleep(e.seconds)
         except Exception:
@@ -373,11 +552,10 @@ async def crawl_messages(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Method 5 — Username Pattern Generation
+# Method 5 — Username Pattern Generation (GCC-specific suffixes)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _extract_base_username(link: str) -> str | None:
-    """Extract bare username from a t.me link (skip invite/addlist links)."""
     if "/+" in link or "/joinchat/" in link or "/addlist/" in link:
         return None
     parts = link.rstrip("/").split("/")
@@ -402,11 +580,10 @@ async def discover_by_username_patterns(
             base_usernames.append(base)
 
     candidates: list[str] = []
-    for base in base_usernames[:40]:  # cap to avoid too many requests
-        # Strip known suffixes first to get clean root
+    for base in base_usernames[:50]:
         root = base
         for suf in _USERNAME_SUFFIXES:
-            if root.endswith(suf):
+            if root.lower().endswith(suf.lower()):
                 root = root[: -len(suf)]
                 break
         for suf in _USERNAME_SUFFIXES:
@@ -415,7 +592,7 @@ async def discover_by_username_patterns(
                 candidates.append(candidate)
 
     random.shuffle(candidates)
-    for candidate in candidates[:100]:  # cap total attempts
+    for candidate in candidates[:120]:
         try:
             entity = await client.get_entity(candidate)
             lnk = f"https://t.me/{candidate}"
@@ -436,6 +613,309 @@ async def discover_by_username_patterns(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Method 6 — Compound Query Matrix  ★ NEW
+# Cross-products GCC regulatory bodies × medical specialties × tiers
+# Generates targeted compound queries the simple keyword list can't cover.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_compound_queries() -> list[str]:
+    """
+    Build a list of compound search strings by combining:
+      - GCC regulatory bodies with specialties  (e.g. "SCFHS Cardiology")
+      - Regulatory bodies with professional tiers (e.g. "SCFHS Consultant")
+      - Specialties with country names (e.g. "Cardiology Saudi")
+    """
+    gcc_countries = [
+        "Saudi", "Saudi Arabia", "KSA", "السعودية",
+        "UAE", "Emirates", "الإمارات", "Dubai", "دبي", "Abu Dhabi", "أبوظبي",
+        "Kuwait", "الكويت",
+        "Qatar", "قطر",
+        "Oman", "عمان",
+        "Bahrain", "البحرين",
+        "GCC", "خليجي",
+    ]
+    compounds: list[str] = []
+    # Regulator × Specialty (sample to avoid thousands of queries)
+    for reg in GCC_REGULATORS[:15]:          # top 15 regulators
+        for spec in _SPECIALTIES_SHORT[:20]: # top 20 specialties
+            compounds.append(f"{reg} {spec}")
+    # Regulator × Tier
+    for reg in ["SCFHS", "DHA", "OMSB", "QCHP", "NHRA", "KMLE"]:
+        for tier in _TIERS:
+            compounds.append(f"{reg} {tier}")
+    # Specialty × Country
+    for spec in _SPECIALTIES_SHORT[:15]:
+        for country in gcc_countries[:8]:
+            compounds.append(f"{spec} {country}")
+    # Deduplicate and shuffle
+    unique = list(dict.fromkeys(compounds))
+    random.shuffle(unique)
+    return unique
+
+
+async def search_by_compound_matrix(
+    client: TelegramClient,
+    known: set,
+    status_cb: Callable,
+    limit_per_query: int = 15,
+    max_queries: int = 120,
+) -> list[str]:
+    """Method 6: Compound regulatory × specialty matrix search."""
+    found: list[str] = []
+    compounds = _build_compound_queries()[:max_queries]
+
+    await status_cb(
+        f"🧮 **الطريقة 6:** مصفوفة الاستعلامات المركبة\n"
+        f"({len(compounds)} تركيبة من الجهات الرقابية × التخصصات)"
+    )
+
+    for i, query in enumerate(compounds):
+        if len(query.strip()) < 3:
+            continue
+        try:
+            result = await client(SearchRequest(q=query, limit=limit_per_query))
+            for chat in result.chats:
+                link = _entity_to_link(chat)
+                if link and _is_new_link(link, known):
+                    found.append(link)
+                    known.add(link.lower())
+        except FloodWaitError as e:
+            await status_cb(f"⏳ مصفوفة: انتظار {e.seconds}s...")
+            await _safe_sleep(e.seconds)
+        except Exception:
+            pass
+
+        if i % 30 == 29:
+            await status_cb(
+                f"🧮 مصفوفة: {i + 1}/{len(compounds)} — اكتُشف {len(found)} رابط"
+            )
+            await _safe_sleep(random.uniform(2.0, 4.0))
+        else:
+            await _safe_sleep(random.uniform(0.8, 2.0))
+
+    await status_cb(f"✅ الطريقة 6 اكتملت: {len(found)} رابط جديد")
+    return found
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Method 7 — Hashtag Discovery  ★ NEW
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def search_by_hashtags(
+    client: TelegramClient,
+    known: set,
+    status_cb: Callable,
+    limit_per_tag: int = 20,
+) -> list[str]:
+    """Method 7: Search Telegram using medical GCC hashtag queries."""
+    found: list[str] = []
+
+    await status_cb(f"#️⃣ **الطريقة 7:** بحث بالهاشتاقات ({len(HASHTAG_QUERIES)} وسم)")
+
+    for i, tag in enumerate(HASHTAG_QUERIES):
+        try:
+            result = await client(SearchRequest(q=tag, limit=limit_per_tag))
+            for chat in result.chats:
+                link = _entity_to_link(chat)
+                if link and _is_new_link(link, known):
+                    found.append(link)
+                    known.add(link.lower())
+        except FloodWaitError as e:
+            await _safe_sleep(e.seconds)
+        except Exception:
+            pass
+        await _safe_sleep(random.uniform(0.8, 2.0))
+
+    await status_cb(f"✅ الطريقة 7 اكتملت: {len(found)} رابط جديد")
+    return found
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Method 8 — Google Custom Search (site:t.me dorks)  ★ NEW
+# Requires env vars: GOOGLE_CSE_API_KEY and GOOGLE_CSE_CX
+# Silently skipped if not configured.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_GOOGLE_DORKS: list[str] = [
+    'site:t.me "SCFHS" OR "Mumaris"',
+    'site:t.me "SMLE" "recall"',
+    'site:t.me "Prometric" "recall" "2025"',
+    'site:t.me "DHA" "exam" "medical"',
+    'site:t.me "OMSB" "Oman"',
+    'site:t.me "QCHP" "Qatar"',
+    'site:t.me "NHRA" "Bahrain"',
+    'site:t.me "KMLE" "Kuwait"',
+    'site:t.me "DataFlow" "verification"',
+    'site:t.me "الزمالة السعودية" OR "Saudi Board"',
+    'site:t.me "نقاط الهيئة" "ساعات"',
+    'site:t.me inurl:joinchat "medical" "DHA"',
+    'site:t.me "تجميعات smle" OR "smle recalled"',
+    'site:t.me "USMLE" "Arab doctors"',
+    'site:t.me "أطباء الخليج" طبي',
+]
+
+
+async def search_by_google_dorks(
+    known: set,
+    status_cb: Callable,
+) -> list[str]:
+    """
+    Method 8: Google Custom Search JSON API.
+    Extracts t.me links from Google results using site:t.me dorks.
+    Requires GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX to be set.
+    """
+    api_key = os.getenv("GOOGLE_CSE_API_KEY", "").strip()
+    cx      = os.getenv("GOOGLE_CSE_CX", "").strip()
+
+    if not api_key or not cx:
+        return []   # silently skip — credentials not configured
+
+    found: list[str] = []
+    await status_cb(
+        f"🌐 **الطريقة 8:** Google Dorks ({len(_GOOGLE_DORKS)} استعلام)"
+    )
+
+    for i, dork in enumerate(_GOOGLE_DORKS):
+        try:
+            params = urllib.parse.urlencode({
+                "key": api_key,
+                "cx":  cx,
+                "q":   dork,
+                "num": 10,
+            })
+            url = f"https://www.googleapis.com/customsearch/v1?{params}"
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+
+            for item in data.get("items", []):
+                link_url = item.get("link", "")
+                snippet  = item.get("snippet", "")
+                # Extract any t.me URLs from the result URL or snippet
+                for raw in _LINK_RE.findall(link_url + " " + snippet):
+                    lnk = _normalise_link(raw)
+                    if _is_new_link(lnk, known):
+                        found.append(lnk)
+                        known.add(lnk.lower())
+
+        except Exception:
+            pass
+
+        await asyncio.sleep(1.2)   # stay within Google's rate limit
+
+    if found:
+        await status_cb(f"✅ الطريقة 8 اكتملت: {len(found)} رابط من Google")
+    return found
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Engagement Scoring  ★ NEW
+# Analyzes recent messages of a discovered channel to produce a quality score.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def score_engagement(
+    client: TelegramClient,
+    link: str,
+    sample_size: int = 100,
+) -> dict:
+    """
+    Returns a dict with:
+      - activity_rate: messages per day (last `sample_size` msgs)
+      - unique_user_ratio: unique_authors / total_messages  (0-1)
+      - is_broadcast: True if it's a channel (one-way)
+      - scam_flagged: True if scam keywords detected
+      - member_count: total members/subscribers
+    """
+    result = {
+        "activity_rate": 0.0,
+        "unique_user_ratio": 0.0,
+        "is_broadcast": False,
+        "scam_flagged": False,
+        "member_count": 0,
+    }
+    try:
+        entity = await client.get_entity(link)
+        result["is_broadcast"] = getattr(entity, "broadcast", False)
+        result["member_count"] = (
+            getattr(entity, "participants_count", 0) or
+            getattr(entity, "members_count", 0) or 0
+        )
+
+        messages       = []
+        unique_authors = set()
+        scam_text      = ""
+
+        async for msg in client.iter_messages(link, limit=sample_size):
+            messages.append(msg)
+            if msg.sender_id:
+                unique_authors.add(msg.sender_id)
+            scam_text += (msg.text or "") + " "
+
+        if messages:
+            result["scam_flagged"] = _has_scam_signals(scam_text)
+            total = len(messages)
+            result["unique_user_ratio"] = round(len(unique_authors) / total, 3) if total else 0
+
+            # Activity rate: msgs per day
+            if len(messages) >= 2:
+                newest = messages[0].date
+                oldest = messages[-1].date
+                span_days = max((newest - oldest).total_seconds() / 86400, 1)
+                result["activity_rate"] = round(total / span_days, 2)
+
+    except Exception:
+        pass
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Scam filter — batch flag discovered links
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def filter_scam_links(
+    client: TelegramClient,
+    links: list[str],
+    status_cb: Callable,
+    sample_size: int = 30,
+) -> tuple[list[str], list[str]]:
+    """
+    Check a batch of new links for scam signals.
+    Returns (clean_links, flagged_links).
+    Only checks the first `sample_size` to save time.
+    """
+    clean: list[str]   = []
+    flagged: list[str] = []
+
+    check_links = links[:sample_size]
+    skip_links  = links[sample_size:]
+
+    for link in check_links:
+        try:
+            entity = await client.get_entity(link)
+            # Check bio/description for scam keywords
+            bio = ""
+            if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+                full = await client(GetFullChannelRequest(entity))
+                bio  = getattr(full.full_chat, "about", "") or ""
+            title = getattr(entity, "title", "") or ""
+            if _has_scam_signals(bio + " " + title):
+                flagged.append(link)
+            else:
+                clean.append(link)
+        except Exception:
+            clean.append(link)   # assume clean if unreachable
+        await _safe_sleep(random.uniform(0.3, 0.8))
+
+    clean.extend(skip_links)
+    if flagged:
+        await status_cb(
+            f"🚨 **فلتر الاحتيال:** تم تمييز {len(flagged)} رابط مشبوه\n"
+            f"   الروابط المشبوهة لن تُضاف للأرشيف."
+        )
+    return clean, flagged
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main discovery runner
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -447,31 +927,33 @@ async def run_smart_discovery(
     source_links: list[str],
 ) -> int:
     """
-    Run all 5 discovery methods and append new links to raw_links.json.
+    Run all 8 discovery methods and append new links to raw_links.json.
     Returns the count of newly discovered links.
     """
     if not accounts:
         await status_callback("❌ لا توجد حسابات مرتبطة.")
         return 0
 
-    # Build the set of already-known links for fast dedup
     existing_raw    = load_raw_links()
     known: set[str] = {_normalise_link(l).lower() for l in existing_raw}
 
-    # Collect links from the archive channels to feed method 2, 3, 4
     await status_callback(
-        "🧠 **بدأ الاكتشاف الذكي!**\n\n"
-        "الطريقة 1️⃣: بحث بكلمات مفتاحية\n"
-        "الطريقة 2️⃣: قنوات مشابهة (Telegram AI)\n"
-        "الطريقة 3️⃣: روابط من البيو\n"
-        "الطريقة 4️⃣: روابط من الرسائل\n"
-        "الطريقة 5️⃣: أنماط اسم المستخدم\n"
+        "🧠 **بدأ الاكتشاف الذكي المحسّن!**\n\n"
+        "1️⃣  بحث بكلمات مفتاحية (100+ كلمة)\n"
+        "2️⃣  قنوات مشابهة (Telegram AI)\n"
+        "3️⃣  روابط من البيو\n"
+        "4️⃣  روابط من الرسائل\n"
+        "5️⃣  أنماط اسم المستخدم (GCC)\n"
+        "6️⃣  مصفوفة الاستعلامات المركبة  🆕\n"
+        "7️⃣  بحث بالهاشتاقات الطبية  🆕\n"
+        "8️⃣  Google Dorks (site:t.me)  🆕\n"
+        "🔒  فلتر احتيال تلقائي  🆕"
     )
 
     session = accounts[0]
     all_found: list[str] = []
+    m1 = m2 = m3 = m4 = m5 = m6 = m7 = m8 = []
 
-    # Sources: mix of archive channel links + known source groups
     archive_links = [
         f"https://t.me/c/{ch_id}" if isinstance(ch_id, int) else ch_id
         for ch_id in archive_channel_ids.values()
@@ -481,59 +963,85 @@ async def run_smart_discovery(
     async with TelegramClient(session, API_ID, API_HASH) as client:
 
         # ── Method 1: Keyword Search ──────────────────────────────────────────
-        await status_callback("🔍 **الطريقة 1:** بحث بأكثر من 80 كلمة مفتاحية...")
+        await status_callback("🔍 **الطريقة 1:** بحث بأكثر من 100 كلمة مفتاحية...")
         m1 = await search_by_keywords(client, known, status_callback)
         all_found.extend(m1)
         await status_callback(f"✅ الطريقة 1 اكتملت: {len(m1)} رابط جديد")
 
-        await _safe_sleep(3)
-
         # ── Method 2: Similar Channels ────────────────────────────────────────
-        await status_callback("🔗 **الطريقة 2:** قنوات مشابهة لما في الأرشيف...")
-        m2 = await get_similar_channels(client, seed_links[:50], known, status_callback)
-        all_found.extend(m2)
-        await status_callback(f"✅ الطريقة 2 اكتملت: {len(m2)} رابط جديد")
-
-        await _safe_sleep(3)
+        if seed_links:
+            await status_callback("🔗 **الطريقة 2:** قنوات مشابهة من Telegram AI...")
+            m2 = await get_similar_channels(client, seed_links[:30], known, status_callback)
+            all_found.extend(m2)
 
         # ── Method 3: Bio Crawling ────────────────────────────────────────────
-        await status_callback("📝 **الطريقة 3:** قراءة بيو القنوات المعروفة...")
-        m3 = await crawl_bios(client, seed_links[:80], known, status_callback)
-        all_found.extend(m3)
-        await status_callback(f"✅ الطريقة 3 اكتملت: {len(m3)} رابط جديد")
-
-        await _safe_sleep(3)
+        if seed_links:
+            await status_callback("📝 **الطريقة 3:** زحف البيو والوصف...")
+            m3 = await crawl_bios(client, seed_links[:40], known, status_callback)
+            all_found.extend(m3)
 
         # ── Method 4: Message Crawling ────────────────────────────────────────
-        await status_callback("💬 **الطريقة 4:** قراءة آخر الرسائل في المصادر...")
-        m4 = await crawl_messages(client, source_links[:20], known, status_callback)
-        all_found.extend(m4)
-        await status_callback(f"✅ الطريقة 4 اكتملت: {len(m4)} رابط جديد")
-
-        await _safe_sleep(3)
+        if seed_links:
+            await status_callback("💬 **الطريقة 4:** زحف الرسائل...")
+            m4 = await crawl_messages(client, seed_links[:20], known, status_callback)
+            all_found.extend(m4)
 
         # ── Method 5: Username Patterns ───────────────────────────────────────
-        await status_callback("🔤 **الطريقة 5:** توليد أسماء مستخدمين مشابهة...")
-        m5 = await discover_by_username_patterns(client, seed_links, known, status_callback)
-        all_found.extend(m5)
-        await status_callback(f"✅ الطريقة 5 اكتملت: {len(m5)} رابط جديد")
+        if seed_links:
+            await status_callback("🔤 **الطريقة 5:** أنماط أسماء المستخدمين...")
+            m5 = await discover_by_username_patterns(client, seed_links, known, status_callback)
+            all_found.extend(m5)
 
-    # Deduplicate and save
-    unique_new = list(dict.fromkeys(all_found))
-    if unique_new:
-        updated = existing_raw + unique_new
-        save_raw_links(updated)
+        # ── Method 6: Compound Query Matrix ★ ────────────────────────────────
+        m6 = await search_by_compound_matrix(client, known, status_callback)
+        all_found.extend(m6)
 
+        # ── Method 7: Hashtag Discovery ★ ────────────────────────────────────
+        m7 = await search_by_hashtags(client, known, status_callback)
+        all_found.extend(m7)
+
+        # ── Scam Filter ★ ────────────────────────────────────────────────────
+        if all_found:
+            await status_callback(
+                f"🔒 **فلتر الاحتيال:** فحص {min(len(all_found), 30)} رابط..."
+            )
+            clean, flagged = await filter_scam_links(
+                client, all_found, status_callback, sample_size=30
+            )
+            all_found = clean
+            if flagged:
+                await status_callback(
+                    f"🚫 تم استبعاد {len(flagged)} رابط مشبوه:\n" +
+                    "\n".join(f"  • {l}" for l in flagged[:5]) +
+                    ("\n  ..." if len(flagged) > 5 else "")
+                )
+
+    # ── Method 8: Google Dorks (no client needed) ★ ──────────────────────────
+    m8 = await search_by_google_dorks(known, status_callback)
+    all_found.extend(m8)
+
+    # ── Save ──────────────────────────────────────────────────────────────────
+    if all_found:
+        combined = existing_raw + all_found
+        save_raw_links(combined)
+
+    total_new = len(all_found)
     await status_callback(
-        f"\n🎯 **اكتمل الاكتشاف الذكي!**\n\n"
-        f"🔍 بحث كلمات مفتاحية: {len(m1)}\n"
-        f"🔗 قنوات مشابهة:      {len(m2)}\n"
-        f"📝 روابط من البيو:     {len(m3)}\n"
-        f"💬 روابط من الرسائل:  {len(m4)}\n"
-        f"🔤 أنماط المستخدمين:  {len(m5)}\n"
-        f"──────────────────────\n"
-        f"📦 **الإجمالي الجديد: {len(unique_new)} رابط**\n\n"
-        f"الروابط أُضيفت لقائمة الحصاد الخام.\n"
-        f"شغّل الفرز الشامل لتصنيفها."
+        f"🎉 **اكتمل الاكتشاف الذكي!**\n\n"
+        f"📊 الملخص:\n"
+        f"  🔍 كلمات مفتاحية:  {len(m1)}\n"
+        f"  🔗 قنوات مشابهة:  {len(m2) if seed_links else 0}\n"
+        f"  📝 بيو:            {len(m3) if seed_links else 0}\n"
+        f"  💬 رسائل:         {len(m4) if seed_links else 0}\n"
+        f"  🔤 أنماط:         {len(m5) if seed_links else 0}\n"
+        f"  🧮 مصفوفة مركبة: {len(m6)}\n"
+        f"  #️⃣ هاشتاقات:      {len(m7)}\n"
+        f"  🌐 Google Dorks:  {len(m8)}\n\n"
+        f"✅ **الإجمالي الجديد: {total_new} رابط**\n"
+        f"📦 المجموع الكلي: {len(existing_raw) + total_new:,} رابط"
     )
-    return len(unique_new)
+
+    db.setdefault("stats", {})
+    db["stats"]["total_found"] = db["stats"].get("total_found", 0) + total_new
+
+    return total_new
