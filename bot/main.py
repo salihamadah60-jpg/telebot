@@ -301,17 +301,16 @@ async def add_acc_handler(event):
     await event.answer()
     count = len(db.get("accounts", []))
 
-    await event.respond(
-        f"**①  ربط حساب تيليجرام**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"الحسابات المرتبطة حالياً: **{count}**\n\n"
-        f"📱 أرسل رقم الهاتف بالصيغة الدولية:\n"
-        f"`+9671234567890`",
-        buttons=[nav_row()],
-        parse_mode="md",
-    )
-
     async with bot.conversation(OWNER_ID, timeout=120) as conv:
+        await conv.send_message(
+            f"**①  ربط حساب تيليجرام**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"الحسابات المرتبطة حالياً: **{count}**\n\n"
+            f"📱 أرسل رقم الهاتف بالصيغة الدولية:\n"
+            f"`+9671234567890`",
+            buttons=[nav_row()],
+            parse_mode="md",
+        )
         phone_msg = await conv.get_response()
         phone     = phone_msg.text.strip()
 
@@ -478,18 +477,18 @@ async def add_src_handler(event):
     await event.answer()
 
     current = len(db.get("sources", []))
-    await event.respond(
-        f"**③  إضافة مصادر الروابط**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"المصادر الحالية: **{current}**\n\n"
-        f"📋 أرسل روابط مجموعات تيليجرام (كل رابط في سطر):\n"
-        f"`https://t.me/medical_links_group`\n"
-        f"`https://t.me/+AbCdEfGh1234`",
-        buttons=[nav_row(b"make_ch")],
-        parse_mode="md",
-    )
 
     async with bot.conversation(OWNER_ID, timeout=180) as conv:
+        await conv.send_message(
+            f"**③  إضافة مصادر الروابط**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"المصادر الحالية: **{current}**\n\n"
+            f"📋 أرسل روابط مجموعات تيليجرام (كل رابط في سطر):\n"
+            f"`https://t.me/medical_links_group`\n"
+            f"`https://t.me/+AbCdEfGh1234`",
+            buttons=[nav_row(b"make_ch")],
+            parse_mode="md",
+        )
         links_msg   = await conv.get_response()
         new_sources = [l.strip() for l in links_msg.text.strip().split("\n") if l.strip()]
 
