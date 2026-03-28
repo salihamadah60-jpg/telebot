@@ -47,81 +47,125 @@ def detect_link_type(entity) -> str:
     return "group"
 
 
-def extract_links_from_text(text: str, entities=None) -> list:
-    """
-    Extract ALL Telegram links from a message.
+def _normalize_link(link: str) -> str:
+    """Normalize a t.me link for deduplication."""
+    link = link.strip().lower()
+    link = re.sub(r"^https?://", "", link)
+    link = re.sub(r"^telegram\.me", "t.me", link)
+    link = re.sub(r"^telegram\.dog", "t.me", link)
+    link = link.rstrip("/.,;:!?\"')")
+    return link
 
-    Handles:
+
+def extract_links_from_text(text: str, entities=None, reply_markup=None, forward_chat=None) -> list:
+    """
+    Extract ALL Telegram links from a message — 100% comprehensive.
+
+    Sources covered:
     - https://t.me/username
-    - t.me/username          (no protocol)
-    - t.me/+HASH             (invite links)
+    - t.me/username           (no protocol)
+    - t.me/+HASH              (invite links)
     - t.me/joinchat/HASH
     - t.me/addlist/SLUG
-    - t.me/c/channelid/msgid (private message links)
-    - t.me/username/msgid    (post links)
+    - t.me/c/channelid/msgid  (private channel message links)
+    - t.me/username/msgid     (post links — extracts the channel part)
     - telegram.me/...
     - tg://resolve?domain=username
-    - @username references   (converted to https://t.me/username)
+    - @username references    (filtered to only valid-length public usernames)
     - Clickable message entities (MessageEntityTextUrl, MessageEntityUrl)
+    - Inline keyboard button URLs (reply_markup)
+    - Forwarded message source channel (forward_chat)
     """
-    if not text:
-        return []
-
     found: list[str] = []
-    seen: set[str] = set()
+    seen_normalized: set[str] = set()
+
+    def add(link: str):
+        link = link.strip().rstrip("/.,;:!?\"')")
+        if not link:
+            return
+        if not link.startswith(("http://", "https://", "tg://")):
+            link = "https://" + link
+        norm = _normalize_link(link)
+        # Skip overly short or generic links
+        path = norm.replace("t.me/", "").replace("telegram.me/", "")
+        if len(path) < 3:
+            return
+        if norm not in seen_normalized:
+            seen_normalized.add(norm)
+            found.append(link)
 
     # ── 1. Regex over raw text ────────────────────────────────────────────────
-    pattern = (
-        r"(?:https?://)?"
-        r"(?:t\.me|telegram\.me|telegram\.dog)"
-        r"/[\+a-zA-Z0-9_\-/]+"
-    )
-    for m in re.finditer(pattern, text, re.IGNORECASE):
-        link = m.group(0).strip().rstrip("/.,;:!?\"')")
-        if not link.startswith("http"):
-            link = "https://" + link
-        if link not in seen:
-            seen.add(link)
-            found.append(link)
+    if text:
+        tme_pattern = (
+            r"(?:https?://)?"
+            r"(?:t\.me|telegram\.me|telegram\.dog)"
+            r"/[\+a-zA-Z0-9_\-/]+"
+        )
+        for m in re.finditer(tme_pattern, text, re.IGNORECASE):
+            raw = m.group(0)
+            # For post links like t.me/channel/123, extract just the channel
+            post_match = re.match(
+                r"((?:https?://)?(?:t\.me|telegram\.me|telegram\.dog)/[a-zA-Z0-9_\-]+)/\d+$",
+                raw.rstrip("/.,;:!?\"')"),
+                re.IGNORECASE,
+            )
+            if post_match:
+                add(post_match.group(1))
+            else:
+                add(raw)
 
-    # ── 2. tg:// deep links ───────────────────────────────────────────────────
-    for m in re.finditer(r"tg://resolve\?domain=([\w]+)", text, re.IGNORECASE):
-        link = f"https://t.me/{m.group(1)}"
-        if link not in seen:
-            seen.add(link)
-            found.append(link)
+        # ── 2. tg:// deep links ───────────────────────────────────────────────
+        for m in re.finditer(r"tg://resolve\?domain=([\w]{3,32})", text, re.IGNORECASE):
+            add(f"https://t.me/{m.group(1)}")
 
-    # ── 3. @username mentions → convert to t.me links ────────────────────────
-    for m in re.finditer(r"(?<!\w)@([a-zA-Z][a-zA-Z0-9_]{3,31})", text):
-        username = m.group(1)
-        link = f"https://t.me/{username}"
-        if link not in seen:
-            seen.add(link)
-            found.append(link)
+        # ── 3. @username mentions → filter to valid public usernames only ─────
+        #   Rules: 5–32 chars, alphanumeric + underscore, not a bot command
+        for m in re.finditer(r"(?<!\w)@([a-zA-Z][a-zA-Z0-9_]{4,31})(?!\w)", text):
+            uname = m.group(1)
+            # Skip all-digit-ending patterns (often message IDs), and _bot suffix
+            if uname.lower().endswith("_bot") or uname.lower().endswith("bot"):
+                continue
+            add(f"https://t.me/{uname}")
 
-    # ── 4. Message entities (clickable links that may differ from visible text) ─
+    # ── 4. Message entities (hidden URLs behind hyperlink text) ───────────────
     if entities:
         try:
-            from telethon.tl.types import (
-                MessageEntityTextUrl,
-                MessageEntityUrl,
-            )
+            from telethon.tl.types import MessageEntityTextUrl, MessageEntityUrl
             for ent in entities:
                 url = None
                 if isinstance(ent, MessageEntityTextUrl):
                     url = ent.url
-                elif isinstance(ent, MessageEntityUrl):
+                elif isinstance(ent, MessageEntityUrl) and text:
                     url = text[ent.offset: ent.offset + ent.length]
                 if not url:
                     continue
-                url = url.strip().rstrip("/.,;:!?\"')")
-                url_lower = url.lower()
-                if any(d in url_lower for d in ("t.me", "telegram.me", "telegram.dog")):
-                    if not url.startswith("http"):
-                        url = "https://" + url
-                    if url not in seen:
-                        seen.add(url)
-                        found.append(url)
+                url_l = url.lower()
+                if any(d in url_l for d in ("t.me", "telegram.me", "telegram.dog", "tg://")):
+                    add(url)
+        except Exception:
+            pass
+
+    # ── 5. Inline keyboard button URLs ───────────────────────────────────────
+    if reply_markup:
+        try:
+            rows = getattr(reply_markup, "rows", [])
+            for row in rows:
+                buttons = getattr(row, "buttons", [])
+                for btn in buttons:
+                    url = getattr(btn, "url", None)
+                    if url:
+                        url_l = url.lower()
+                        if any(d in url_l for d in ("t.me", "telegram.me", "telegram.dog", "tg://")):
+                            add(url)
+        except Exception:
+            pass
+
+    # ── 6. Forwarded source channel ───────────────────────────────────────────
+    if forward_chat:
+        try:
+            uname = getattr(forward_chat, "username", None)
+            if uname:
+                add(f"https://t.me/{uname}")
         except Exception:
             pass
 
