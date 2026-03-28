@@ -78,19 +78,28 @@ async def harvest_sources(
             flood_sleep_threshold=60,
         ) as client:
 
+            total_srcs = len(db.get("sources", []))
             for src_idx, source in enumerate(db.get("sources", []), 1):
                 # Check stop flag before each source
                 if sorter_ctrl.harvest_stop:
                     await status_callback(
                         f"⏹ **تم إيقاف الحصاد.**\n"
-                        f"📦 تم حفظ {len(newly_found):,} رابط جديد."
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📦 تم حفظ **{len(newly_found):,}** رابط جديد."
                     )
                     _save_partial()
                     return _save_partial()
 
-                src_label = f"`{source}`"
+                src_label = source.split("/")[-1] if "/" in source else source
+                _pct = int((src_idx - 1) / total_srcs * 100)
+                _bar = "▓" * (_pct // 10) + "░" * (10 - _pct // 10)
                 await status_callback(
-                    f"🔍 [{src_idx}/{len(db['sources'])}] جاري سحب الروابط من: {src_label}"
+                    f"🌾 **الحصاد — جارٍ...**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"[{_bar}] {_pct}%\n"
+                    f"📍 المصدر [{src_idx}/{total_srcs}]: `{src_label}`\n"
+                    f"⏳ جاري الاتصال والقراءة...\n"
+                    f"📦 إجمالي الرحلة: **{len(newly_found):,}**"
                 )
 
                 try:
@@ -140,10 +149,16 @@ async def harvest_sources(
 
                     # Periodic progress report + rate-limit pause
                     if msg_count % 500 == 0:
+                        _pct2 = int((src_idx - 1) / total_srcs * 100)
+                        _bar2 = "▓" * (_pct2 // 10) + "░" * (10 - _pct2 // 10)
                         await status_callback(
-                            f"📦 {src_label}\n"
-                            f"  رسائل مقروءة: {msg_count:,}\n"
-                            f"  روابط جديدة:  {link_count:,}"
+                            f"🌾 **الحصاد — جارٍ...**\n"
+                            f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            f"[{_bar2}] المصدر {src_idx}/{total_srcs}\n"
+                            f"📍 `{src_label}`\n"
+                            f"📨 رسائل مقروءة: **{msg_count:,}**\n"
+                            f"🔗 روابط جديدة هنا: **{link_count:,}**\n"
+                            f"📦 إجمالي الرحلة: **{len(newly_found):,}**"
                         )
                         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
@@ -155,18 +170,26 @@ async def harvest_sources(
                 # Source done
                 if sorter_ctrl.harvest_stop:
                     await status_callback(
-                        f"⏹ **توقف الحصاد في:** {src_label}\n"
-                        f"  رسائل: {msg_count:,} | روابط جديدة: {link_count:,}"
+                        f"⏹ **توقف الحصاد**\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📍 `{src_label}` (المصدر {src_idx}/{total_srcs})\n"
+                        f"📨 رسائل: **{msg_count:,}** | 🔗 روابط: **{link_count:,}**\n"
+                        f"📦 الإجمالي المحفوظ: **{len(newly_found):,}**"
                     )
                     break
 
+                _pct3 = int(src_idx / total_srcs * 100)
+                _bar3 = "▓" * (_pct3 // 10) + "░" * (10 - _pct3 // 10)
                 summary = (
-                    f"✅ انتهى سحب {src_label}\n"
-                    f"  رسائل: {msg_count:,} | "
-                    f"روابط جديدة: {link_count:,}"
+                    f"🌾 **الحصاد — جارٍ...**\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"[{_bar3}] {_pct3}%\n"
+                    f"✅ انتهى [{src_idx}/{total_srcs}]: `{src_label}`\n"
+                    f"📨 رسائل: **{msg_count:,}** | 🔗 روابط: **{link_count:,}**"
                 )
                 if addlist_count:
-                    summary += f" | روابط مجلدات: {addlist_count:,}"
+                    summary += f" | 📂 مجلدات: **{addlist_count:,}**"
+                summary += f"\n📦 إجمالي الرحلة: **{len(newly_found):,}**"
                 await status_callback(summary)
 
         combined = _save_partial()

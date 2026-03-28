@@ -126,6 +126,51 @@ async def status_msg(text: str):
         pass
 
 
+def make_edit_callback(msg_id: int, chat_id: int, fixed_buttons=None):
+    """Returns an async callback that EDITS one persistent message instead of sending new ones."""
+    async def _cb(text: str):
+        try:
+            await bot.edit_message(
+                chat_id, msg_id, text,
+                buttons=fixed_buttons,
+                parse_mode="md",
+            )
+        except Exception:
+            pass
+    return _cb
+
+
+async def _keep_alive_http():
+    """Minimal HTTP health-check server so autoscale deployment never scales to zero."""
+    port = int(os.environ.get("PORT", 8080))
+
+    async def _handle(reader, writer):
+        try:
+            await reader.read(1024)
+        except Exception:
+            pass
+        body = b"Bot OK"
+        response = (
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\n\r\n" + body
+        )
+        try:
+            writer.write(response)
+            await writer.drain()
+        except Exception:
+            pass
+        writer.close()
+
+    try:
+        server = await asyncio.start_server(_handle, "0.0.0.0", port)
+        print(f"🌐 HTTP health-check server started on port {port}")
+        async with server:
+            await server.serve_forever()
+    except Exception as e:
+        print(f"⚠️ HTTP server error: {e}")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Smart Flow Engine — determines current progress & next recommended step
 # ─────────────────────────────────────────────────────────────────────────────
@@ -654,25 +699,21 @@ async def harvest_handler(event):
         return
 
     existing = get_raw_count()
-    await event.respond(
-        f"**④  حصاد الروابط**\n"
+    _stop_btn = [[Button.inline("⏹ إيقاف الحصاد", b"stop_harvest")]]
+    prog_msg = await event.respond(
+        f"🌾 **الحصاد — جارٍ...**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 المصادر: {len(db['sources'])}\n"
-        f"📦 الروابط الموجودة: {existing:,}\n\n"
-        f"🌾 جاري السحب من جميع المصادر...\n"
-        f"💾 الروابط تُحفظ في `raw_links.json` — الحصادات الجديدة تُضاف إليها.\n"
-        f"_تصلك تحديثات كل 500 رسالة._",
-        buttons=[
-            [Button.inline("⏹ إيقاف الحصاد", b"stop_harvest")],
-            nav_row(b"add_src"),
-        ],
+        f"📋 المصادر: {len(db['sources'])} | 📦 موجود: {existing:,}\n\n"
+        f"⏳ جاري الاتصال بالمصادر...",
+        buttons=_stop_btn,
         parse_mode="md",
     )
+    prog_cb = make_edit_callback(prog_msg.id, OWNER_ID, fixed_buttons=_stop_btn)
 
     sorter_ctrl.start_harvest()
     try:
         harvested = await harvest_sources(
-            status_callback=status_msg,
+            status_callback=prog_cb,
             db=db,
             session=db["accounts"][0],
         )
@@ -680,9 +721,14 @@ async def harvest_handler(event):
         sorter_ctrl.end_harvest()
 
     new_count = len(harvested) - existing
+    try:
+        await bot.edit_message(OWNER_ID, prog_msg.id, "🌾 **الحصاد — اكتمل ✅**", buttons=[nav_row(b"add_src")])
+    except Exception:
+        pass
     await bot.send_message(
         OWNER_ID,
-        f"🎉 **اكتمل الحصاد!**\n\n"
+        f"🎉 **اكتمل الحصاد!**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📦 إجمالي الروابط: **{len(harvested):,}**\n"
         f"🆕 روابط جديدة: **{new_count:,}**\n\n"
         f"💾 محفوظة في `raw_links.json`\nهل تريد بدء الفرز الآن؟",
@@ -864,12 +910,15 @@ async def smart_discover_handler(event):
         f"**⑥  الاكتشاف الذكي**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📦 الروابط الحالية: {raw_count:,}\n\n"
-        f"🧠 يبحث بـ **5 طرق متزامنة:**\n"
-        f"  1️⃣ بحث بكلمات مفتاحية (80+ استعلام)\n"
-        f"  2️⃣ استكشاف قنوات مشابهة\n"
-        f"  3️⃣ فحص مجموعات المصادر الحالية\n"
-        f"  4️⃣ توسيع المجلدات (Addlist)\n"
-        f"  5️⃣ رصد الإشارات والمنشورات\n\n"
+        f"🧠 يبحث بـ **8 طرق:**\n"
+        f"  1️⃣ بحث بكلمات مفتاحية (100+ استعلام)\n"
+        f"  2️⃣ قنوات مشابهة (Telegram AI)\n"
+        f"  3️⃣ روابط من البيو والوصف\n"
+        f"  4️⃣ روابط من الرسائل الأخيرة\n"
+        f"  5️⃣ أنماط أسماء المستخدمين (GCC)\n"
+        f"  6️⃣ مصفوفة الجهات × التخصصات 🆕\n"
+        f"  7️⃣ بحث بالهاشتاقات الطبية 🆕\n"
+        f"  8️⃣ Google Dorks (site:t.me) 🆕\n\n"
         f"هل تريد البدء؟",
         buttons=[
             [Button.inline("🚀 ابدأ الاكتشاف الآن", b"confirm_discover")],
@@ -887,19 +936,26 @@ async def confirm_discover_handler(event):
     archive_ids  = {k: v for k, v in db.get("channels", {}).items() if isinstance(v, int)}
     source_links = db.get("sources", [])
 
-    await event.respond(
-        "🧠 **بدأ الاكتشاف الذكي...**\n_ستصلك تحديثات مستمرة._",
-        buttons=[nav_row(b"run_sort")],
+    prog_msg = await event.respond(
+        "🧠 **الاكتشاف الذكي — جارٍ...**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "⏳ جاري التحضير...",
         parse_mode="md",
     )
+    prog_cb = make_edit_callback(prog_msg.id, OWNER_ID)
 
     new_count = await run_smart_discovery(
-        status_callback=status_msg,
+        status_callback=prog_cb,
         db=db,
         accounts=db["accounts"],
         archive_channel_ids=archive_ids,
         source_links=source_links,
     )
+
+    try:
+        await bot.edit_message(OWNER_ID, prog_msg.id, "🧠 **الاكتشاف الذكي — اكتمل ✅**", buttons=[nav_row(b"run_sort")])
+    except Exception:
+        pass
 
     if new_count > 0:
         await bot.send_message(
@@ -1002,8 +1058,7 @@ async def _ask_join_count_and_start(event, source_key: str):
 
         await conv.send_message(
             f"⏳ سيبدأ الانضمام إلى **{max_joins}** رابط من **{channel_label}**\n"
-            f"🛡 نظام الحماية الذكي مفعّل (دفعات متقطعة).\n"
-            f"_سيتم إرسال تحديث لكل رابط._",
+            f"🛡 نظام الحماية الذكي مفعّل (دفعات متقطعة).",
             parse_mode="md",
         )
 
@@ -1026,24 +1081,36 @@ async def _ask_join_count_and_start(event, source_key: str):
             await status_msg(f"❌ خطأ في قراءة روابط القناة: {e}")
 
     if not links_to_join:
-        await status_msg(
-            "❌ لم يتم العثور على روابط في القناة.\n"
-            "تأكد من تشغيل الفرز أولاً.",
-            # buttons arg not valid in status_msg - user sends a new message
-        )
         await bot.send_message(
-            OWNER_ID, "❌ لا روابط في القناة.",
+            OWNER_ID,
+            "❌ لا روابط في القناة.\nتأكد من تشغيل الفرز أولاً.",
             buttons=[[Button.inline("⚡ تشغيل الفرز أولاً ◄", b"run_sort")], nav_row()],
         )
         return
 
+    join_prog = await bot.send_message(
+        OWNER_ID,
+        f"🤝 **الانضمام الذكي — جارٍ...**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"[░░░░░░░░░░] 0%\n"
+        f"📋 روابط للانضمام: **{min(max_joins, len(links_to_join))}**\n\n"
+        f"⏳ جاري التحضير...",
+        parse_mode="md",
+    )
+    join_cb = make_edit_callback(join_prog.id, OWNER_ID)
+
     await run_smart_joiner(
-        status_callback=status_msg,
+        status_callback=join_cb,
         links_to_join=links_to_join,
         accounts=db["accounts"],
         db=db,
         max_joins=max_joins,
     )
+
+    try:
+        await bot.edit_message(OWNER_ID, join_prog.id, "🤝 **الانضمام الذكي — اكتمل ✅**", buttons=[nav_row(b"smart_join")])
+    except Exception:
+        pass
 
 
 @bot.on(events.CallbackQuery(data=b"jch_channels"))
@@ -1341,6 +1408,7 @@ async def fallback_callback_handler(event):
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def main():
+    asyncio.create_task(_keep_alive_http())
     while True:
         try:
             await bot.start(bot_token=BOT_TOKEN)
