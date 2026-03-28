@@ -1,6 +1,8 @@
 import os
 import asyncio
 import random
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telethon import TelegramClient, events, Button
 from telethon.errors import FloodWaitError
@@ -22,11 +24,33 @@ from database import (
     load_raw_links,
 )
 from account_manager import AccountManager
-from channel_setup import create_archive_channels
+from channel_setup import create_archive_channels, add_account_to_channels
 from harvester import harvest_sources
 from sorter import run_sorter
 from joiner import run_smart_joiner
 from searcher import run_smart_discovery
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tiny HTTP keep-alive server — required so Replit deployment keeps the
+# process alive even when the browser is closed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK - bot is running")
+    def log_message(self, *args):
+        pass   # silence access logs
+
+
+def _start_health_server():
+    port = int(os.getenv("PORT", "8080"))
+    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"🌐 Health server on port {port}")
 
 db = load_db()
 
@@ -118,7 +142,8 @@ async def add_acc_handler(event):
         success, result = await AccountManager.add_account_interactive(conv, phone)
 
         if success:
-            if result not in db["accounts"]:
+            is_new = result not in db["accounts"]
+            if is_new:
                 db["accounts"].append(result)
                 save_db(db)
             info = await AccountManager.get_account_info(result)
@@ -128,6 +153,20 @@ async def add_acc_handler(event):
                 f"📱 **المعرف:** {info['username']}\n"
                 f"☎️ **الهاتف:** {info['phone']}"
             )
+            # Auto-add new account to existing archive channels
+            if is_new and db.get("channels"):
+                await conv.send_message(
+                    "⏳ جاري إضافة الحساب الجديد إلى قنوات الأرشيف الست..."
+                )
+                try:
+                    await add_account_to_channels(result, db)
+                    await conv.send_message(
+                        "✅ تم إضافة الحساب إلى جميع قنوات الأرشيف كمسؤول."
+                    )
+                except Exception as e:
+                    await conv.send_message(
+                        f"⚠️ لم يتمكن من إضافة الحساب للقنوات تلقائياً:\n{e}"
+                    )
         else:
             await conv.send_message(f"❌ فشل ربط الحساب:\n{result}")
 
@@ -615,6 +654,7 @@ async def confirm_clear_handler(event):
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def main():
+    _start_health_server()          # keeps process alive for Replit deployment
     await bot.start(bot_token=BOT_TOKEN)
     print("🤖 البوت يعمل... أرسل /start في تيليجرام للبدء.")
     await bot.run_until_disconnected()

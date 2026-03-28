@@ -1,0 +1,28 @@
+{
+  "accounts": [
+    "sessions/967774221636"
+  ],
+  "sources": [
+    "https://t.me/+vyyRHfdFp61kM2I0"
+  ],
+  "channels": {
+    "channels": 3738224971,
+    "groups": 3898753995,
+    "broken": 3875469796,
+    "invite": 3753538658,
+    "addlist": 3737330548,
+    "bots": 3728220602
+  },
+  "joined_links": [],
+  "progress": {
+    "source_index": 0,
+    "last_msg_id": 0,
+    "last_sorted_index": 0
+  },
+  "stats": {
+    "total_found": 0,
+    "total_sorted": 0,
+    "total_broken": 0,
+    "total_skipped_duplicate": 0
+  }
+}

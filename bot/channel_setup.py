@@ -1,14 +1,17 @@
 import asyncio
 from telethon import TelegramClient
-from telethon.tl.functions.channels import CreateChannelRequest
+from telethon.errors import FloodWaitError, UserAlreadyParticipantError
+from telethon.tl.functions.channels import (
+    CreateChannelRequest,
+    InviteToChannelRequest,
+    EditAdminRequest,
+)
+from telethon.tl.types import ChatAdminRights
 from config import API_ID, API_HASH, CHANNEL_KEYS
 
 
 async def create_archive_channels(session: str, db: dict, save_db_fn) -> dict:
-    """
-    Create the 5 archive channels if they don't already exist.
-    Stores their IDs in db['channels'] keyed by CHANNEL_KEYS.
-    """
+    """Create the 6 archive channels and add ALL connected accounts as admins."""
     created = {}
     async with TelegramClient(session, API_ID, API_HASH) as client:
         for key, title in CHANNEL_KEYS.items():
@@ -30,4 +33,83 @@ async def create_archive_channels(session: str, db: dict, save_db_fn) -> dict:
                 await asyncio.sleep(2)
             except Exception as e:
                 created[key] = f"فشل: {e}"
+
+        # Add all other connected sessions as admins
+        other_sessions = [s for s in db.get("accounts", []) if s != session]
+        if other_sessions and db.get("channels"):
+            await _add_sessions_to_channels(client, other_sessions, db["channels"])
+
     return created
+
+
+async def add_account_to_channels(new_session: str, db: dict):
+    """
+    Called when a new account is added after channels already exist.
+    Uses the first existing account (creator) to invite + promote the new one.
+    """
+    channels = db.get("channels", {})
+    accounts = db.get("accounts", [])
+    if not channels or not accounts:
+        return
+
+    # Pick the first session as the admin doing the invite
+    admin_session = accounts[0] if accounts[0] != new_session else (
+        accounts[1] if len(accounts) > 1 else None
+    )
+    if not admin_session:
+        return
+
+    async with TelegramClient(admin_session, API_ID, API_HASH) as admin_client:
+        await _add_sessions_to_channels(admin_client, [new_session], channels)
+
+
+async def _add_sessions_to_channels(
+    admin_client: TelegramClient,
+    sessions: list[str],
+    channels: dict,
+):
+    """Invite each session's user into each channel and promote them to admin."""
+    admin_rights = ChatAdminRights(
+        change_info=True,
+        post_messages=True,
+        edit_messages=True,
+        delete_messages=True,
+        ban_users=False,
+        invite_users=True,
+        pin_messages=True,
+        add_admins=False,
+        manage_call=False,
+    )
+
+    for sess in sessions:
+        # Get the user entity for this session
+        try:
+            async with TelegramClient(sess, API_ID, API_HASH) as user_client:
+                me = await user_client.get_me()
+        except Exception:
+            continue
+
+        for key, ch_id in channels.items():
+            if not isinstance(ch_id, int):
+                continue
+            try:
+                # Invite
+                await admin_client(InviteToChannelRequest(
+                    channel=ch_id,
+                    users=[me],
+                ))
+                await asyncio.sleep(1)
+                # Promote to admin
+                await admin_client(EditAdminRequest(
+                    channel=ch_id,
+                    user_id=me,
+                    admin_rights=admin_rights,
+                    rank="مساعد",
+                ))
+                await asyncio.sleep(1)
+            except UserAlreadyParticipantError:
+                pass
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds)
+            except Exception:
+                pass
