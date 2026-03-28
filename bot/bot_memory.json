@@ -3,7 +3,11 @@
     "sessions/967774221636"
   ],
   "sources": [
-    "https://t.me/+vyyRHfdFp61kM2I0"
+    "https://t.me/+vyyRHfdFp61kM2I0",
+    "https://t.me/+_KLni4EgNpAxZmM0",
+    "https://t.me/+M8DXhzkGvk9kNjE8",
+    "https://t.me/+xHwMEUsqSPMwZTk0",
+    "https://t.me/+Gx0FD34TAWxiZmM8"
   ],
   "channels": {
     "channels": 3738224971,
@@ -17,11 +21,11 @@
   "progress": {
     "source_index": 0,
     "last_msg_id": 0,
-    "last_sorted_index": 0
+    "last_sorted_index": 40
   },
   "stats": {
-    "total_found": 0,
-    "total_sorted": 0,
+    "total_found": 2,
+    "total_sorted": 2,
     "total_broken": 0,
     "total_skipped_duplicate": 0
   }

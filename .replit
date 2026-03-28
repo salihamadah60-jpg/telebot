@@ -76,13 +76,25 @@ args = "cd bot && bash keep_alive.sh"
 outputType = "console"
 
 [[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
+name = "push"
+mode = "sequential"
+author = 56718866
 
 [[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "keep live"
+task = "shell.exec"
+args = "git config --global user.name \"salihamadah60\" git config --global user.email \"salih@gmail.com\""
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "git config --global user.email \"salih@gmail.com\""
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "git init"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "git add ."
 
 [agent]
 stack = "PNPM_WORKSPACE"
@@ -95,3 +107,6 @@ timeoutMs = 20000
 [nix]
 channel = "stable-25_05"
 packages = ["openssl"]
+
+[[ports]]
+localPort = 8080
