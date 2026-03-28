@@ -34,18 +34,64 @@ from searcher import run_smart_discovery
 import state as sorter_ctrl
 
 db = load_db()
-bot = TelegramClient("bot_controller", API_ID, API_HASH)
+bot = TelegramClient(
+    "bot_controller", API_ID, API_HASH,
+    connection_retries=-1,
+    retry_delay=5,
+    auto_reconnect=True,
+    request_retries=5,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auth guard
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _is_authorized(sender_id: int) -> bool:
+    """True if sender is the owner or a trusted user."""
+    fresh = load_db()
+    return sender_id == OWNER_ID or sender_id in fresh.get("trusted_users", [])
+
+
 def owner_only(func):
+    """Allows both the owner AND trusted users."""
+    @functools.wraps(func)
+    async def wrapper(event):
+        if not _is_authorized(event.sender_id):
+            msg = "🚫 غير مصرح لك. أرسل /start لطلب الوصول."
+            try:
+                await event.answer(msg, alert=True)
+            except Exception:
+                try:
+                    await event.respond(msg, parse_mode="md")
+                except Exception:
+                    pass
+            return
+        try:
+            await func(event)
+        except AlreadyInConversationError:
+            try:
+                await event.answer("⚠️ هناك عملية جارية. أنهها أو انتظر.", alert=True)
+            except Exception:
+                pass
+        except Exception as e:
+            try:
+                await event.answer("❌ حدث خطأ، حاول مجدداً.", alert=True)
+            except Exception:
+                pass
+            try:
+                await bot.send_message(OWNER_ID, f"❌ خطأ في {func.__name__}:\n{e}", parse_mode="md")
+            except Exception:
+                pass
+    return wrapper
+
+
+def admin_only(func):
+    """Strict owner-only — trusted users cannot access."""
     @functools.wraps(func)
     async def wrapper(event):
         if event.sender_id != OWNER_ID:
-            msg = f"🚫 غير مصرح لك.\n\nهويتك: `{event.sender_id}`\nالمسموح به: `{OWNER_ID}`"
+            msg = "🔒 هذا الإجراء للمالك فقط."
             try:
                 await event.answer(msg, alert=True)
             except Exception:
@@ -295,11 +341,30 @@ async def show_dashboard(target):
 
 
 @bot.on(events.NewMessage(pattern="/start"))
-@owner_only
 async def start_handler(event):
     db.update(load_db())
-    text, buttons = build_dashboard(db)
-    await event.respond(text, buttons=buttons, parse_mode="md")
+    if _is_authorized(event.sender_id):
+        text, buttons = build_dashboard(db)
+        await event.respond(text, buttons=buttons, parse_mode="md")
+        return
+
+    user_id_str = str(event.sender_id)
+    if user_id_str in db.get("pending_requests", {}):
+        await event.respond(
+            "⏳ **طلبك قيد المراجعة**\n\nسيتم إشعارك فور قبول أو رفض طلبك من المالك.",
+            parse_mode="md",
+        )
+        return
+
+    sender = await event.get_sender()
+    name = getattr(sender, "first_name", "") or ""
+    await event.respond(
+        f"👋 مرحباً {name}!\n\n"
+        "هذا البوت خاص ويتطلب موافقة المالك للوصول.\n\n"
+        "هل تريد إرسال طلب وصول للمالك؟",
+        buttons=[[Button.inline("📨 إرسال طلب الوصول", f"req_{event.sender_id}".encode())]],
+        parse_mode="md",
+    )
 
 
 @bot.on(events.CallbackQuery(data=b"home"))
@@ -314,7 +379,7 @@ async def home_handler(event):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot.on(events.CallbackQuery(data=b"add_acc"))
-@owner_only
+@admin_only
 async def add_acc_handler(event):
     await event.answer()
     count = len(db.get("accounts", []))
@@ -496,7 +561,7 @@ async def add_src_handler(event):
 
     current = len(db.get("sources", []))
 
-    async with bot.conversation(OWNER_ID, timeout=180) as conv:
+    async with bot.conversation(event.sender_id, timeout=180) as conv:
         await conv.send_message(
             f"**③  إضافة مصادر الروابط**\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -589,11 +654,23 @@ async def harvest_handler(event):
         parse_mode="md",
     )
 
-    harvested = await harvest_sources(
-        status_callback=status_msg,
-        db=db,
-        session=db["accounts"][0],
-    )
+    if sorter_ctrl.is_harvesting:
+        await event.respond(
+            "⚠️ **الحصاد يعمل بالفعل.**\n\nانتظر حتى ينتهي الحصاد الحالي.",
+            buttons=[nav_row()],
+            parse_mode="md",
+        )
+        return
+
+    sorter_ctrl.start_harvest()
+    try:
+        harvested = await harvest_sources(
+            status_callback=status_msg,
+            db=db,
+            session=db["accounts"][0],
+        )
+    finally:
+        sorter_ctrl.end_harvest()
 
     new_count = len(harvested) - existing
     await status_msg(
@@ -639,6 +716,14 @@ async def run_sort_handler(event):
         await event.respond(
             "🔒 يجب إنشاء القنوات أولاً.",
             buttons=[[Button.inline("📺 إنشاء القنوات ◄", b"make_ch")], nav_row()],
+        )
+        return
+
+    if sorter_ctrl.is_harvesting:
+        await event.respond(
+            "⚠️ **الحصاد يعمل الآن.** لا يمكن تشغيل الفرز في نفس الوقت.\n\nانتظر حتى ينتهي الحصاد.",
+            buttons=[nav_row()],
+            parse_mode="md",
         )
         return
 
@@ -867,7 +952,7 @@ async def _ask_join_count_and_start(event, source_key: str):
     await event.answer()
     channel_label = CHANNEL_KEYS.get(source_key, source_key)
 
-    async with bot.conversation(OWNER_ID, timeout=120) as conv:
+    async with bot.conversation(event.sender_id, timeout=120) as conv:
         await conv.send_message(
             f"✅ المصدر: **{channel_label}**\n\n"
             f"📊 كم رابطاً تريد الانضمام إليه؟ (مثال: `20`)",
@@ -1046,6 +1131,153 @@ async def confirm_clear_handler(event):
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Access Request System
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bot.on(events.CallbackQuery(pattern=rb"req_(\d+)"))
+async def request_access_handler(event):
+    await event.answer()
+    user_id = int(event.data.decode().split("_", 1)[1])
+
+    if user_id != event.sender_id:
+        await event.answer("❌ غير صالح.", alert=True)
+        return
+
+    db.update(load_db())
+    if _is_authorized(user_id):
+        await event.edit("✅ لديك وصول بالفعل. أرسل /start.", parse_mode="md")
+        return
+
+    sender = await event.get_sender()
+    name     = getattr(sender, "first_name", "") or str(user_id)
+    username = f"@{sender.username}" if getattr(sender, "username", None) else "بدون يوزرنيم"
+
+    db.setdefault("pending_requests", {})[str(user_id)] = {
+        "name": name,
+        "username": username,
+    }
+    save_db(db)
+
+    try:
+        await bot.send_message(
+            OWNER_ID,
+            f"🔔 **طلب وصول جديد**\n\n"
+            f"👤 الاسم: {name}\n"
+            f"🆔 يوزرنيم: {username}\n"
+            f"🔢 المعرف: `{user_id}`",
+            buttons=[
+                [Button.inline("✅ قبول", f"ap_{user_id}".encode()),
+                 Button.inline("❌ رفض",  f"dn_{user_id}".encode())],
+            ],
+            parse_mode="md",
+        )
+    except Exception:
+        pass
+
+    await event.edit(
+        "✅ **تم إرسال طلبك للمالك.**\n\nسيتم إشعارك فور البت في طلبك.",
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(pattern=rb"ap_(\d+)"))
+@admin_only
+async def approve_user_handler(event):
+    user_id = int(event.data.decode().split("_", 1)[1])
+    db.update(load_db())
+
+    if user_id not in db.setdefault("trusted_users", []):
+        db["trusted_users"].append(user_id)
+
+    info = db.setdefault("pending_requests", {}).pop(str(user_id), {})
+    save_db(db)
+
+    try:
+        await bot.send_message(
+            user_id,
+            "✅ **تم قبول طلبك!**\n\nأرسل /start لفتح لوحة التحكم.",
+            parse_mode="md",
+        )
+    except Exception:
+        pass
+
+    name = info.get("name", str(user_id))
+    await event.answer(f"✅ تم قبول {name}")
+    await event.edit(
+        f"✅ **تم قبول الوصول**\n👤 {name} | `{user_id}`",
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(pattern=rb"dn_(\d+)"))
+@admin_only
+async def deny_user_handler(event):
+    user_id = int(event.data.decode().split("_", 1)[1])
+    db.update(load_db())
+
+    info = db.setdefault("pending_requests", {}).pop(str(user_id), {})
+    save_db(db)
+
+    try:
+        await bot.send_message(
+            user_id,
+            "❌ **تم رفض طلبك.**\n\nللاستفسار تواصل مع المالك.",
+            parse_mode="md",
+        )
+    except Exception:
+        pass
+
+    name = info.get("name", str(user_id))
+    await event.answer(f"❌ تم رفض {name}")
+    await event.edit(
+        f"❌ **تم رفض الطلب**\n👤 {name} | `{user_id}`",
+        parse_mode="md",
+    )
+
+
+@bot.on(events.NewMessage(pattern="/trusted"))
+@admin_only
+async def trusted_users_handler(event):
+    db.update(load_db())
+    trusted = db.get("trusted_users", [])
+
+    if not trusted:
+        await event.respond(
+            "👥 **المستخدمون الموثوقون**\n\nلا يوجد مستخدمون موثوقون حتى الآن.\n\n"
+            "ستصلك إشعارات عندما يطلب أحدهم الوصول.",
+            parse_mode="md",
+        )
+        return
+
+    lines = [f"👥 **المستخدمون الموثوقون ({len(trusted)}):**\n"]
+    for uid in trusted:
+        lines.append(f"• `{uid}`")
+
+    lines.append("\n_لإزالة مستخدم: أرسل /revoke <ID>_")
+    await event.respond("\n".join(lines), parse_mode="md")
+
+
+@bot.on(events.NewMessage(pattern=r"/revoke (\d+)"))
+@admin_only
+async def revoke_user_handler(event):
+    db.update(load_db())
+    user_id = int(event.pattern_match.group(1))
+
+    if user_id in db.get("trusted_users", []):
+        db["trusted_users"].remove(user_id)
+        save_db(db)
+        await event.respond(f"✅ تم إلغاء وصول المستخدم `{user_id}`.", parse_mode="md")
+        try:
+            await bot.send_message(user_id, "🚫 تم إلغاء وصولك من قِبل المالك.", parse_mode="md")
+        except Exception:
+            pass
+    else:
+        await event.respond(f"❌ المعرف `{user_id}` غير موجود في قائمة الموثوقين.", parse_mode="md")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+
 @bot.on(events.NewMessage(pattern="/whoami"))
 async def whoami_handler(event):
     """No auth check — lets you find your real Telegram ID."""
@@ -1077,15 +1309,23 @@ async def fallback_callback_handler(event):
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def main():
-    await bot.start(bot_token=BOT_TOKEN)
-    # Advance the update state so stale pending callbacks from while the bot
-    # was offline are not replayed and do not corrupt conversation state.
-    try:
-        await bot(GetStateRequest())
-    except Exception:
-        pass
-    print(f"🤖 البوت يعمل... OWNER_ID={OWNER_ID} | أرسل /start في تيليجرام للبدء.")
-    await bot.run_until_disconnected()
+    while True:
+        try:
+            await bot.start(bot_token=BOT_TOKEN)
+            try:
+                await bot(GetStateRequest())
+            except Exception:
+                pass
+            print(f"🤖 البوت يعمل... OWNER_ID={OWNER_ID} | أرسل /start في تيليجرام للبدء.")
+            await bot.run_until_disconnected()
+        except Exception as e:
+            print(f"⚠️ انقطع الاتصال: {e} — إعادة المحاولة خلال 10 ثوانٍ...")
+            await asyncio.sleep(10)
+        finally:
+            try:
+                await bot.disconnect()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
