@@ -3,7 +3,6 @@ import re
 import asyncio
 import random
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from telethon import TelegramClient, events, Button
 from telethon.errors import FloodWaitError
@@ -30,30 +29,6 @@ from harvester import harvest_sources
 from sorter import run_sorter
 from joiner import run_smart_joiner
 from searcher import run_smart_discovery
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Health server — starts immediately so Replit detects the port
-# ─────────────────────────────────────────────────────────────────────────────
-
-class _HealthHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK - bot is running")
-    def log_message(self, *args):
-        pass
-
-
-def _start_health_server():
-    port = int(os.getenv("PORT", "3000"))
-    server = HTTPServer(("0.0.0.0", port), _HealthHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    print(f"🌐 Health server on port {port}")
-
-
-_start_health_server()
 
 db = load_db()
 bot = TelegramClient("bot_controller", API_ID, API_HASH)
