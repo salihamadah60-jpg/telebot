@@ -26,6 +26,7 @@ from channel_setup import create_archive_channels
 from harvester import harvest_sources
 from sorter import run_sorter
 from joiner import run_smart_joiner
+from searcher import run_smart_discovery
 
 db = load_db()
 
@@ -69,11 +70,14 @@ async def start_handler(event):
             Button.inline("⚡ بدء الفرز الشامل",    b"run_sort"),
         ],
         [
+            Button.inline("🧠 اكتشاف ذكي",           b"smart_discover"),
             Button.inline("🤝 انضمام ذكي",           b"smart_join"),
-            Button.inline("📊 إحصائيات",             b"stats"),
         ],
         [
+            Button.inline("📊 إحصائيات",             b"stats"),
             Button.inline("🧹 مسح الذاكرة",          b"clear_mem"),
+        ],
+        [
             Button.inline("👤 عرض الحسابات",         b"list_acc"),
         ],
     ]
@@ -85,7 +89,8 @@ async def start_handler(event):
         "3️⃣ إضافة المصادر (مجموعات الروابط)\n"
         "4️⃣ حصاد الروابط\n"
         "5️⃣ بدء الفرز الشامل\n"
-        "6️⃣ الانضمام الذكي للروابط المرتبة\n\n"
+        "6️⃣ 🧠 اكتشاف ذكي (يجد روابط مشابهة تلقائياً)\n"
+        "7️⃣ 🤝 انضمام ذكي للروابط المرتبة\n\n"
         "اختر من القائمة أدناه:",
         buttons=buttons,
         parse_mode="md",
@@ -460,6 +465,83 @@ async def jch_addlist(event):
 @owner_only
 async def jch_bots(event):
     await _ask_join_count_and_start(event, "bots")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Smart Discovery — find new medical links automatically (5 methods)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bot.on(events.CallbackQuery(data=b"smart_discover"))
+@owner_only
+async def smart_discover_handler(event):
+    await event.answer()
+    if not db["accounts"]:
+        await event.respond("❌ يجب ربط حساب أولاً.")
+        return
+
+    raw_count = get_raw_count()
+    buttons = [
+        [Button.inline("🚀 ابدأ الاكتشاف الآن", b"confirm_discover")],
+        [Button.inline("❌ إلغاء",               b"start")],
+    ]
+    await event.respond(
+        "🧠 **الاكتشاف الذكي**\n\n"
+        "سيبحث البوت عن روابط طبية جديدة باستخدام **5 طرق متزامنة:**\n\n"
+        "1️⃣ **بحث بكلمات مفتاحية** — أكثر من 80 استعلام بحثي عربي وإنجليزي\n"
+        "2️⃣ **قنوات مشابهة** — نظام التوصيات الداخلي في تيليجرام\n"
+        "3️⃣ **روابط من البيو** — يقرأ وصف كل قناة ويستخرج الروابط المذكورة\n"
+        "4️⃣ **روابط من الرسائل** — يقرأ آخر الرسائل في مجموعات المصادر\n"
+        "5️⃣ **أنماط اسم المستخدم** — يولّد اسماء مشابهة للقنوات الموجودة\n\n"
+        f"📦 روابط موجودة حالياً: **{raw_count}**\n"
+        "⚠️ العملية قد تأخذ 10-30 دقيقة حسب عدد المصادر.",
+        buttons=buttons,
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=b"confirm_discover"))
+@owner_only
+async def confirm_discover_handler(event):
+    await event.answer("⏳ جاري البدء...")
+    if not db["accounts"]:
+        await event.respond("❌ لا توجد حسابات.")
+        return
+
+    # Build archive channel IDs map (only integer IDs)
+    archive_ids = {
+        k: v for k, v in db.get("channels", {}).items()
+        if isinstance(v, int)
+    }
+
+    source_links = db.get("sources", [])
+
+    await event.respond(
+        "🧠 **بدأ الاكتشاف الذكي...**\n"
+        "ستصلك تحديثات مستمرة. لا تغلق البوت.",
+        parse_mode="md",
+    )
+
+    new_count = await run_smart_discovery(
+        status_callback=status_msg,
+        db=db,
+        accounts=db["accounts"],
+        archive_channel_ids=archive_ids,
+        source_links=source_links,
+    )
+
+    if new_count > 0:
+        buttons = [
+            [Button.inline("⚡ فرز الروابط الجديدة الآن", b"run_sort")],
+            [Button.inline("⏳ تأجيل الفرز",              b"start")],
+        ]
+        await bot.send_message(
+            OWNER_ID,
+            f"🎉 اكتُشف **{new_count}** رابط جديد!\nهل تريد الفرز الآن؟",
+            buttons=buttons,
+            parse_mode="md",
+        )
+    else:
+        await status_msg("ℹ️ لم يُكتشف روابط جديدة. المصادر الحالية قد تكون مستنفدة.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
