@@ -642,6 +642,17 @@ async def harvest_handler(event):
         )
         return
 
+    if sorter_ctrl.is_harvesting:
+        await event.respond(
+            "⚠️ **الحصاد يعمل بالفعل.**\n\nانتظر حتى ينتهي الحصاد الحالي، أو اضغط إيقاف.",
+            buttons=[
+                [Button.inline("⏹ إيقاف الحصاد", b"stop_harvest")],
+                nav_row(),
+            ],
+            parse_mode="md",
+        )
+        return
+
     existing = get_raw_count()
     await event.respond(
         f"**④  حصاد الروابط**\n"
@@ -649,18 +660,14 @@ async def harvest_handler(event):
         f"📋 المصادر: {len(db['sources'])}\n"
         f"📦 الروابط الموجودة: {existing:,}\n\n"
         f"🌾 جاري السحب من جميع المصادر...\n"
-        f"_ستصلك تحديثات دورية._",
-        buttons=[nav_row(b"add_src")],
+        f"💾 الروابط تُحفظ في `raw_links.json` — الحصادات الجديدة تُضاف إليها.\n"
+        f"_تصلك تحديثات كل 500 رسالة._",
+        buttons=[
+            [Button.inline("⏹ إيقاف الحصاد", b"stop_harvest")],
+            nav_row(b"add_src"),
+        ],
         parse_mode="md",
     )
-
-    if sorter_ctrl.is_harvesting:
-        await event.respond(
-            "⚠️ **الحصاد يعمل بالفعل.**\n\nانتظر حتى ينتهي الحصاد الحالي.",
-            buttons=[nav_row()],
-            parse_mode="md",
-        )
-        return
 
     sorter_ctrl.start_harvest()
     try:
@@ -673,14 +680,12 @@ async def harvest_handler(event):
         sorter_ctrl.end_harvest()
 
     new_count = len(harvested) - existing
-    await status_msg(
-        f"✅ **اكتمل الحصاد!**\n\n"
-        f"📦 إجمالي الروابط: **{len(harvested):,}**\n"
-        f"🆕 روابط جديدة: **{new_count:,}**"
-    )
     await bot.send_message(
         OWNER_ID,
-        f"🎉 تم جمع **{len(harvested):,}** رابط!\nهل تريد بدء الفرز الآن؟",
+        f"🎉 **اكتمل الحصاد!**\n\n"
+        f"📦 إجمالي الروابط: **{len(harvested):,}**\n"
+        f"🆕 روابط جديدة: **{new_count:,}**\n\n"
+        f"💾 محفوظة في `raw_links.json`\nهل تريد بدء الفرز الآن؟",
         buttons=[
             [Button.inline("⏭️ بدء الفرز الآن ◄", b"run_sort")],
             nav_row(b"add_src"),
@@ -689,15 +694,28 @@ async def harvest_handler(event):
     )
 
 
+@bot.on(events.CallbackQuery(data=b"stop_harvest"))
+@owner_only
+async def stop_harvest_handler(event):
+    await event.answer("⏹ جاري إيقاف الحصاد بعد الرسالة الحالية...")
+    sorter_ctrl.stop_harvest()
+    await event.answer("⏹ تم إرسال إشارة الإيقاف — سيتوقف الحصاد وتُحفظ الروابط.", alert=True)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 5 — Sort
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _sort_control_buttons() -> list:
+def _sort_control_buttons(paused: bool = False) -> list:
     """Inline buttons shown while sorting is active."""
+    if paused:
+        return [
+            [Button.inline("▶️ استئناف", b"sort_resume"),
+             Button.inline("⏹ إيقاف وحفظ", b"sort_stop")],
+        ]
     return [
-        [Button.inline("⏸ إيقاف مؤقت", b"sort_pause"), Button.inline("⏹ إيقاف نهائي", b"sort_stop")],
-        [Button.inline("🏠 القائمة الرئيسية", b"home")],
+        [Button.inline("⏸ إيقاف مؤقت", b"sort_pause"),
+         Button.inline("⏹ إيقاف وحفظ", b"sort_stop")],
     ]
 
 
@@ -740,15 +758,21 @@ async def run_sort_handler(event):
     start_from = db.get("progress", {}).get("last_sorted_index", 0)
     remaining  = len(raw) - start_from
     pct        = int(start_from / len(raw) * 100) if raw else 0
+    bar_f      = "▓" * (pct // 10)
+    bar_e      = "░" * (10 - pct // 10)
 
-    await event.respond(
-        f"**⑤ الفرز الشامل**\n"
-        f"📊 الإجمالي: {len(raw):,} | ✅ تم: {start_from:,} ({pct}%) | ⏳ متبقي: {remaining:,}\n\n"
-        + ("🔄 استئناف من حيث توقفنا..." if start_from > 0 else "⚡ بدء الفرز الشامل...")
-        + "\n_ستصلك تحديثات دورية._",
+    # Send ONE persistent progress message — the sorter will EDIT this message
+    progress_msg = await bot.send_message(
+        OWNER_ID,
+        f"📊 **الفرز الشامل — جارٍ...**\n"
+        f"[{bar_f}{bar_e}] {pct}%\n\n"
+        f"تم: **{start_from:,}** / {len(raw):,} رابط\n"
+        f"{'🔄 استئناف من حيث توقفنا...' if start_from > 0 else '⚡ بدء الفرز الشامل...'}\n\n"
+        f"_الأرقام تُحدَّث تلقائياً — لا تُرسل رسائل جديدة._",
         buttons=_sort_control_buttons(),
         parse_mode="md",
     )
+    sorter_ctrl.set_progress_msg(progress_msg.id, OWNER_ID)
 
     await run_sorter(
         status_callback=status_msg,
@@ -757,13 +781,17 @@ async def run_sort_handler(event):
         bot_client=bot,
         start_from=start_from,
     )
+    sorter_ctrl.clear_progress_msg()
 
     if not sorter_ctrl.is_stopped():
         await bot.send_message(
             OWNER_ID,
-            f"🎯 **اكتمل الفرز!**\n"
-            f"✅ {db['stats'].get('total_sorted', 0):,} مرتبة | "
-            f"💀 {db['stats'].get('total_broken', 0):,} تالفة",
+            f"🎯 **اكتمل الفرز بنجاح!**\n\n"
+            f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,}\n"
+            f"💀 تالفة/منتهية: {db['stats'].get('total_broken', 0):,}\n"
+            f"🔐 دعوات خاصة: {db['stats'].get('total_invite', 0):,}\n\n"
+            f"📝 الروابط \"التالفة\" = يوزرنيم محذوف فعلاً.\n"
+            f"الدعوات الخاصة = رابط +invite لم ينضم إليه الحساب بعد.",
             buttons=[
                 [Button.inline("🧠 اكتشاف ذكي ◄", b"smart_discover"),
                  Button.inline("🤝 انضمام ذكي ◄",  b"smart_join")],
@@ -776,16 +804,19 @@ async def run_sort_handler(event):
 @bot.on(events.CallbackQuery(data=b"sort_pause"))
 @owner_only
 async def sort_pause_handler(event):
-    await event.answer("⏸ جاري الإيقاف المؤقت...")
+    await event.answer("⏸ سيتوقف بعد الدفعة الحالية...")
     sorter_ctrl.pause()
-    await event.respond(
-        "⏸ **الفرز متوقف مؤقتاً.**\nسيتوقف بعد انتهاء الدفعة الحالية.",
-        buttons=[
-            [Button.inline("▶️ استئناف", b"sort_resume"), Button.inline("⏹ إيقاف نهائي", b"sort_stop")],
-            nav_row(),
-        ],
-        parse_mode="md",
-    )
+    # Update the progress message buttons to show Resume instead of Pause
+    if sorter_ctrl.progress_msg_id and sorter_ctrl.progress_chat_id:
+        try:
+            await bot.edit_message(
+                sorter_ctrl.progress_chat_id,
+                sorter_ctrl.progress_msg_id,
+                buttons=_sort_control_buttons(paused=True),
+            )
+        except Exception:
+            pass
+    await event.answer("⏸ الفرز سيتوقف بعد الدفعة الحالية.", alert=True)
 
 
 @bot.on(events.CallbackQuery(data=b"sort_resume"))
@@ -793,26 +824,23 @@ async def sort_pause_handler(event):
 async def sort_resume_handler(event):
     await event.answer("▶️ جاري الاستئناف...")
     sorter_ctrl.resume()
-    await event.respond(
-        "▶️ **تم استئناف الفرز.**",
-        buttons=_sort_control_buttons(),
-        parse_mode="md",
-    )
+    if sorter_ctrl.progress_msg_id and sorter_ctrl.progress_chat_id:
+        try:
+            await bot.edit_message(
+                sorter_ctrl.progress_chat_id,
+                sorter_ctrl.progress_msg_id,
+                buttons=_sort_control_buttons(paused=False),
+            )
+        except Exception:
+            pass
 
 
 @bot.on(events.CallbackQuery(data=b"sort_stop"))
 @owner_only
 async def sort_stop_handler(event):
-    await event.answer("⏹ جاري الإيقاف...")
+    await event.answer("⏹ جاري الإيقاف وحفظ التقدم...")
     sorter_ctrl.stop()
-    await event.respond(
-        "⏹ **تم إيقاف الفرز.**\nالتقدم محفوظ — يمكنك الاستئناف لاحقاً من حيث توقفت.",
-        buttons=[
-            [Button.inline("▶️ استئناف الفرز لاحقاً", b"run_sort")],
-            nav_row(),
-        ],
-        parse_mode="md",
-    )
+    await event.answer("⏹ تم إيقاف الفرز. التقدم محفوظ — يمكن الاستئناف لاحقاً.", alert=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1074,12 +1102,16 @@ async def stats_handler(event):
         f"📦 **الروابط الخام:** {raw:,}\n"
         f"🔍 **المفحوصة:** {seen:,}\n"
         f"✅ **المرتبة بنجاح:** {stats.get('total_sorted', 0):,}\n"
-        f"❌ **التالفة/الخاصة:** {stats.get('total_broken', 0):,}\n"
+        f"💀 **تالفة (منتهية فعلاً):** {stats.get('total_broken', 0):,}\n"
+        f"🔐 **دعوات خاصة:** {stats.get('total_invite', 0):,}\n"
         f"⏭️ **المتخطاة (مكررة):** {stats.get('total_skipped_duplicate', 0):,}\n"
         f"🤝 **تم الانضمام إليها:** {len(db.get('joined_links', [])):,}\n\n"
         f"👤 **الحسابات:** {len(db.get('accounts', []))}\n"
         f"🔗 **المصادر:** {len(db.get('sources', []))}\n"
-        f"📺 **القنوات:** {len(db.get('channels', {}))}/7"
+        f"📺 **القنوات:** {len(db.get('channels', {}))}/7\n\n"
+        f"ℹ️ **ملاحظة عن التالفة:**\n"
+        f"الروابط التالفة = يوزرنيم محذوف أو حساب غير موجود.\n"
+        f"روابط +invite التي لم ينضم إليها الحساب → قناة 🔐 الدعوات."
     )
 
     await event.respond(text, buttons=[nav_row()], parse_mode="md")

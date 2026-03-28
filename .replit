@@ -82,7 +82,7 @@ outputType = "console"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd bot && python main.py"
+args = "cd bot && bash keep_alive.sh"
 
 [agent]
 stack = "PNPM_WORKSPACE"

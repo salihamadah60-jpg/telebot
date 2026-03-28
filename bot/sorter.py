@@ -4,19 +4,20 @@ Sorter — parallel link inspection and dispatch to one of the 7 archive channel
 Channel routing:
   - addlist links  → "addlist"
   - bot entities   → "bots"
-  - invite links   → "invite"
+  - invite links   → "invite"  (both accessible AND inaccessible invite links)
   - non-medical    → "other"
   - channel type   → "channels"
   - group type     → "groups"
-  - broken/private → "broken"
+  - truly broken   → "broken"  (deleted/invalid usernames only)
 
-Database-locking fix: one shared TelegramClient per batch (not one per task).
-Parallel processing: up to MAX_CONCURRENT links inspected simultaneously.
+Persistent progress bar:
+  - One message is sent at the start and EDITED on every batch update
+  - Stop and Pause/Resume buttons are embedded in that message
 """
 
 import asyncio
 import random
-from telethon import TelegramClient
+from telethon import TelegramClient, Button
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
@@ -44,6 +45,7 @@ from config import (
     DELAY_MAX,
     SWITCH_ACCOUNT_EVERY,
     MAX_CONCURRENT,
+    OWNER_ID,
 )
 import state as sorter_ctrl
 
@@ -122,15 +124,24 @@ async def expand_addlist(client: TelegramClient, link: str) -> list[str]:
 def route_to_channel(link: str, info: dict, is_add: bool, is_med: bool = True) -> str:
     if is_add:
         return "addlist"
+
+    # ── Invite links (t.me/+ or t.me/joinchat/...) always go to "invite" ──
+    # Even if get_entity failed (because the account hasn't joined yet),
+    # these are VALID invite links — not broken links.
+    if is_invite_link(link):
+        return "invite"
+
+    # ── If entity lookup failed and it's NOT an invite link → truly broken ──
     if not info.get("ok"):
         return "broken"
+
     entity = info.get("entity")
     if entity and is_bot_entity(entity):
         return "bots"
-    if is_invite_link(link):
-        return "invite"
+
     if not is_med:
         return "other"
+
     link_type = info.get("link_type", "")
     if link_type == "channel":
         return "channels"
@@ -144,7 +155,7 @@ def route_to_channel(link: str, info: dict, is_add: bool, is_med: bool = True) -
 _CHANNEL_LABELS = {
     "channels": "📢 قناة",
     "groups":   "👥 مجموعة",
-    "broken":   "💀 منتهي/خاص",
+    "broken":   "💀 منتهي/غير صالح",
     "invite":   "🔐 رابط دعوة",
     "addlist":  "📂 مجلد",
     "bots":     "🤖 بوت",
@@ -170,8 +181,8 @@ def build_report(
     channel_label = _CHANNEL_LABELS.get(channel_key, "❓")
 
     if not info.get("ok"):
-        reason = info.get("reason", "خطأ غير معروف")
-        status = "🔐 رابط دعوة" if info.get("is_private") else f"❌ تالف ({reason})"
+        is_priv = is_invite_link(link)
+        status = "🔐 رابط دعوة (يحتاج انضمام)" if is_priv else f"❌ رابط منتهٍ ({info.get('reason', '')})"
         return (
             f"**الحالة:** {status}\n"
             f"**الرابط:** {link}\n"
@@ -205,6 +216,52 @@ def build_report(
             lines.append(f"  … و{len(addlist_children) - 10} رابط إضافي")
 
     return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Progress bar builder
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _build_progress_bar(done: int, total: int, width: int = 10) -> str:
+    if total == 0:
+        return "░" * width + " 0%"
+    pct     = done / total
+    filled  = round(pct * width)
+    bar     = "▓" * filled + "░" * (width - filled)
+    return f"{bar} {int(pct * 100)}%"
+
+
+def _build_progress_text(
+    batch_num: int,
+    total_batches: int,
+    done: int,
+    total: int,
+    sorted_ok: int,
+    broken: int,
+    batch_errors: int,
+    account_name: str,
+    status: str = "جارٍ...",
+) -> str:
+    bar = _build_progress_bar(done, total)
+    return (
+        f"📊 **الفرز الشامل — {status}**\n"
+        f"[{bar}]\n\n"
+        f"تم: **{done:,}** / {total:,} رابط\n"
+        f"✅ مرتبة: {sorted_ok:,} | 💀 تالفة/منتهية: {broken:,} | ❌ أخطاء: {batch_errors:,}\n"
+        f"الدفعة: {batch_num}/{total_batches} | 👤 `{account_name}`"
+    )
+
+
+def _progress_buttons(paused: bool = False) -> list:
+    if paused:
+        return [
+            [Button.inline("▶️ استئناف", b"sort_resume"),
+             Button.inline("⏹ إيقاف وحفظ", b"sort_stop")],
+        ]
+    return [
+        [Button.inline("⏸ إيقاف مؤقت", b"sort_pause"),
+         Button.inline("⏹ إيقاف وحفظ", b"sort_stop")],
+    ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -277,6 +334,9 @@ async def process_single_link(
 
             if channel_key == "broken":
                 db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
+            elif channel_key == "invite":
+                db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
+                db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
             else:
                 db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
             db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
@@ -316,44 +376,68 @@ async def run_sorter(
         await status_callback("✅ جميع الروابط تمت معالجتها مسبقاً.")
         return
 
-    await status_callback(
-        f"⚡ بدأ الفرز المتوازي على **{total}** رابط "
-        f"بـ **{MAX_CONCURRENT}** مسار متزامن..."
-    )
-
     sem        = asyncio.Semaphore(MAX_CONCURRENT)
     acc_idx    = 0
     op_count   = 0
     batch_size = MAX_CONCURRENT * 4
     extra_links_collector: list[str] = []
-    batches = [pending[i: i + batch_size] for i in range(0, len(pending), batch_size)]
+    batches    = [pending[i: i + batch_size] for i in range(0, len(pending), batch_size)]
+    total_batches = len(batches)
+
+    # ── Progress message — edited in place every batch ────────────────────────
+    prog_msg_id  = sorter_ctrl.progress_msg_id
+    prog_chat_id = sorter_ctrl.progress_chat_id
+
+    async def _edit_progress(batch_num: int, account_name: str, batch_errors: int, status: str = "جارٍ..."):
+        if not prog_msg_id or not prog_chat_id:
+            return
+        text = _build_progress_text(
+            batch_num=batch_num,
+            total_batches=total_batches,
+            done=start_from + op_count,
+            total=len(raw_links),
+            sorted_ok=db["stats"].get("total_sorted", 0),
+            broken=db["stats"].get("total_broken", 0),
+            batch_errors=batch_errors,
+            account_name=account_name,
+            status=status,
+        )
+        paused = sorter_ctrl.is_paused()
+        try:
+            await bot_client.edit_message(
+                prog_chat_id, prog_msg_id,
+                text,
+                buttons=_progress_buttons(paused),
+                parse_mode="md",
+            )
+        except Exception:
+            pass
 
     for batch_num, batch in enumerate(batches, 1):
         # ── Check stop ────────────────────────────────────────────────────────
         if sorter_ctrl.is_stopped():
-            await status_callback("⏹ **توقف الفرز** — تم الحفظ.")
+            await _edit_progress(batch_num, accounts[acc_idx % len(accounts)], 0, "متوقف ⏹")
+            await status_callback("⏹ **توقف الفرز** — التقدم محفوظ.")
             return
 
         # ── Check pause — wait until resumed or stopped ───────────────────────
         if sorter_ctrl.is_paused():
-            await status_callback("⏸ **الفرز متوقف مؤقتاً** — اضغط ▶️ استئناف للمتابعة.")
+            await _edit_progress(batch_num, accounts[acc_idx % len(accounts)], 0, "متوقف مؤقتاً ⏸")
             while sorter_ctrl.is_paused():
                 await asyncio.sleep(2)
             if sorter_ctrl.is_stopped():
-                await status_callback("⏹ **توقف الفرز** — تم الحفظ.")
+                await _edit_progress(batch_num, accounts[acc_idx % len(accounts)], 0, "متوقف ⏹")
+                await status_callback("⏹ **توقف الفرز** — التقدم محفوظ.")
                 return
 
         if op_count > 0 and op_count % SWITCH_ACCOUNT_EVERY < batch_size and len(accounts) > 1:
             acc_idx = (acc_idx + 1) % len(accounts)
-            await status_callback(f"🔄 التبديل إلى الحساب: `{accounts[acc_idx]}`")
-
 
         session      = accounts[acc_idx % len(accounts)]
         account_name = session
 
-        # ── Open ONE shared client per batch — eliminates "database is locked" ──
         try:
-            async with TelegramClient(session, API_ID, API_HASH) as client:
+            async with TelegramClient(session, API_ID, API_HASH, flood_sleep_threshold=30) as client:
                 try:
                     me = await client.get_me()
                     account_name = (me.first_name or "") + (
@@ -385,14 +469,10 @@ async def run_sorter(
         db["progress"]["last_sorted_index"] = start_from + op_count
         save_db(db)
 
-        await status_callback(
-            f"📊 الدُفعة {batch_num}/{len(batches)} — "
-            f"تم: {op_count}/{total} | "
-            f"مرتبة: {db['stats'].get('total_sorted', 0)} | "
-            f"تالفة: {db['stats'].get('total_broken', 0)} | "
-            f"أخطاء في الدفعة: {errors}"
-        )
+        # Edit the persistent progress message
+        await _edit_progress(batch_num, account_name, errors)
 
+    # ── Handle extra addlist-derived links ────────────────────────────────────
     if extra_links_collector:
         all_links    = load_raw_links() + extra_links_collector
         unique_extra = list(dict.fromkeys(extra_links_collector))
@@ -401,9 +481,24 @@ async def run_sorter(
             f"📂 تم استخراج **{len(unique_extra)}** رابط إضافي من المجلدات."
         )
 
-    await status_callback(
-        f"🎯 اكتمل الفرز المتوازي!\n"
-        f"✅ مرتبة: {db['stats'].get('total_sorted', 0)}\n"
-        f"💀 تالفة: {db['stats'].get('total_broken', 0)}\n"
-        f"📊 الإجمالي: {db['stats'].get('total_found', 0)}"
-    )
+    # ── Final update on the progress message ─────────────────────────────────
+    if prog_msg_id and prog_chat_id:
+        final_text = (
+            f"🎯 **اكتمل الفرز!**\n"
+            f"[{'▓' * 10}] 100%\n\n"
+            f"تم: **{start_from + op_count:,}** / {len(raw_links):,} رابط\n"
+            f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,} | "
+            f"💀 تالفة: {db['stats'].get('total_broken', 0):,} | "
+            f"🔐 دعوات: {db['stats'].get('total_invite', 0):,}\n\n"
+            f"📝 **ملاحظة:** الروابط \"التالفة\" هي روابط يوزرنيم منتهية أو محذوفة فعلاً.\n"
+            f"الروابط الخاصة/الدعوات تجدها في قناة 🔐 روابط الدعوة."
+        )
+        try:
+            await bot_client.edit_message(
+                prog_chat_id, prog_msg_id,
+                final_text,
+                buttons=[[Button.inline("🏠 القائمة الرئيسية", b"home")]],
+                parse_mode="md",
+            )
+        except Exception:
+            pass

@@ -24,7 +24,7 @@ echo ""
 while true; do
     echo "$(date '+%Y-%m-%d %H:%M:%S') [KEEP-ALIVE] Starting bot..." | tee -a "$LOG_FILE"
     cd "$SCRIPT_DIR"
-    $PYTHON main.py 2>&1 | tee -a "$LOG_FILE"
+    $PYTHON -u main.py 2>&1 | tee -a "$LOG_FILE"
     EXIT_CODE=$?
     echo "$(date '+%Y-%m-%d %H:%M:%S') [KEEP-ALIVE] Bot exited with code $EXIT_CODE. Restarting in 10s..." | tee -a "$LOG_FILE"
     sleep 10

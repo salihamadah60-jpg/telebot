@@ -123,9 +123,15 @@ A standalone Python-based Telegram bot for intelligent medical link harvesting, 
 
 ### Running the Bot
 ```bash
-cd bot
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your API_ID, API_HASH, BOT_TOKEN, OWNER_ID
-python main.py
+cd bot && bash keep_alive.sh   # production-style (auto-restart on crash)
+# or
+cd bot && python -u main.py    # direct run (also has reconnect loop)
 ```
+
+### Recent Fixes (March 2026)
+- **Persistent progress bar**: Sorting now sends ONE message that gets edited each batch, showing a visual `▓▓▓▓░░` bar with %, counts, and Stop/Pause buttons. No more message spam.
+- **Stop/Pause/Resume** for both sorting AND harvesting.
+- **Sorting logic fix**: Invite links (`t.me/+...`) that can't be accessed are now correctly routed to the "دعوات" archive (not falsely counted as "broken"). "Broken" now means truly deleted/invalid usernames only.
+- **Group extraction fix**: Added `flood_sleep_threshold=60` so Telethon auto-retries short FloodWaits during `iter_messages`, preventing mid-group extraction stops.
+- **Periodic saves**: Harvest saves every 500 newly found links (not just at the end) so partial progress is never lost.
+- **keep_alive.sh**: Development workflow now also uses keep_alive.sh with `-u` flag for unbuffered logs.
