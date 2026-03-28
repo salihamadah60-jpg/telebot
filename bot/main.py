@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import random
 import threading
@@ -32,8 +33,7 @@ from searcher import run_smart_discovery
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Tiny HTTP keep-alive server — required so Replit deployment keeps the
-# process alive even when the browser is closed.
+# Health server — starts immediately so Replit detects the port
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _HealthHandler(BaseHTTPRequestHandler):
@@ -42,23 +42,26 @@ class _HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"OK - bot is running")
     def log_message(self, *args):
-        pass   # silence access logs
+        pass
 
 
 def _start_health_server():
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.getenv("PORT", "3000"))
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(f"🌐 Health server on port {port}")
 
-# Start health server immediately at module load so Replit sees the port right away
+
 _start_health_server()
 
 db = load_db()
-
 bot = TelegramClient("bot_controller", API_ID, API_HASH)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auth guard
+# ─────────────────────────────────────────────────────────────────────────────
 
 def owner_only(func):
     async def wrapper(event):
@@ -83,71 +86,256 @@ async def status_msg(text: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# /start — Main control panel
+# Smart Flow Engine — determines current progress & next recommended step
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_flow_status(db: dict) -> dict:
+    accounts   = db.get("accounts", [])
+    channels   = db.get("channels", {})
+    sources    = db.get("sources", [])
+    raw_count  = get_raw_count()
+    seen_count = get_seen_count()
+    stats      = db.get("stats", {})
+    sorted_ok  = stats.get("total_sorted", 0)
+    last_idx   = db.get("progress", {}).get("last_sorted_index", 0)
+
+    steps = [
+        {
+            "n": 1, "key": "accounts",
+            "icon": "✅" if accounts else "🔴",
+            "label": "الحسابات",
+            "detail": f"{len(accounts)} حساب مرتبط" if accounts else "لا يوجد حساب",
+            "done": bool(accounts),
+        },
+        {
+            "n": 2, "key": "channels",
+            "icon": "✅" if len(channels) >= 7 else ("⚠️" if channels else "🔴"),
+            "label": "قنوات الأرشيف",
+            "detail": f"{len(channels)}/7 قنوات" if channels else "لم تُنشأ بعد",
+            "done": len(channels) >= 7,
+            "locked": not accounts,
+        },
+        {
+            "n": 3, "key": "sources",
+            "icon": "✅" if sources else "🔴",
+            "label": "المصادر",
+            "detail": f"{len(sources)} مصدر مضاف" if sources else "لا مصادر",
+            "done": bool(sources),
+            "locked": not accounts,
+        },
+        {
+            "n": 4, "key": "harvest",
+            "icon": "✅" if raw_count > 0 else "🔴",
+            "label": "حصاد الروابط",
+            "detail": f"{raw_count:,} رابط تم جمعها" if raw_count else "لم يبدأ بعد",
+            "done": raw_count > 0,
+            "locked": not sources,
+        },
+        {
+            "n": 5, "key": "sort",
+            "icon": "✅" if (raw_count > 0 and last_idx >= raw_count) else ("🔄" if last_idx > 0 else "⏳"),
+            "label": "الفرز الشامل",
+            "detail": (
+                f"{last_idx:,}/{raw_count:,} ✦ {int(last_idx/raw_count*100)}%"
+                if raw_count > 0 and last_idx > 0
+                else ("اكتمل ✅" if raw_count > 0 and sorted_ok > 0 and last_idx >= raw_count else "لم يبدأ بعد")
+            ),
+            "done": raw_count > 0 and last_idx >= raw_count,
+            "in_progress": raw_count > 0 and 0 < last_idx < raw_count,
+            "locked": raw_count == 0,
+        },
+        {
+            "n": 6, "key": "discover",
+            "icon": "✅" if stats.get("total_found", 0) > raw_count else "⏳",
+            "label": "اكتشاف ذكي",
+            "detail": "يجد روابط طبية تلقائياً" if not stats.get("total_found") else "تم التشغيل",
+            "done": False,
+            "locked": not accounts,
+        },
+        {
+            "n": 7, "key": "join",
+            "icon": "✅" if db.get("joined_links") else "⏳",
+            "label": "انضمام ذكي",
+            "detail": f"{len(db.get('joined_links', []))} رابط تم الانضمام" if db.get("joined_links") else "لم يبدأ بعد",
+            "done": bool(db.get("joined_links")),
+            "locked": not channels,
+        },
+    ]
+
+    # Determine recommended next step
+    next_step = None
+    for s in steps:
+        if not s.get("locked") and not s["done"]:
+            next_step = s
+            break
+        if s.get("in_progress"):
+            next_step = s
+            break
+
+    return {"steps": steps, "next": next_step, "last_idx": last_idx, "raw_count": raw_count}
+
+
+def build_dashboard(db: dict) -> tuple[str, list]:
+    flow   = get_flow_status(db)
+    steps  = flow["steps"]
+    nxt    = flow["next"]
+    raw    = flow["raw_count"]
+    last   = flow["last_idx"]
+
+    # ── Progress bar ─────────────────────────────────────────────────────────
+    done_count = sum(1 for s in steps if s["done"])
+    bar_filled = "█" * done_count
+    bar_empty  = "░" * (7 - done_count)
+    pct        = int(done_count / 7 * 100)
+
+    text = (
+        "🏥 **نظام الفلترة الطبية الذكي**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 **تقدمك العام:** {bar_filled}{bar_empty} {pct}%\n\n"
+        "**خارطة الطريق:**\n"
+    )
+
+    for s in steps:
+        locked = "🔒 " if s.get("locked") else ""
+        text += f"{s['icon']} **{s['n']}. {locked}{s['label']}**\n"
+        text += f"      ↳ _{s['detail']}_\n"
+
+    text += "\n━━━━━━━━━━━━━━━━━━━━━\n"
+
+    if nxt:
+        tip = {
+            "accounts": "ابدأ بربط حساب تيليجرام واحد على الأقل",
+            "channels":  "أنشئ قنوات الأرشيف السبع (تُنشأ تلقائياً)",
+            "sources":   "أضف مجموعات تيليجرام كمصادر للروابط",
+            "harvest":   "ابدأ الحصاد لجمع الروابط من المصادر",
+            "sort":      f"استأنف الفرز من الرابط {last+1:,}" if last > 0 else "ابدأ فرز الروابط وتصنيفها",
+            "discover":  "دع الذكاء الاصطناعي يكتشف روابط طبية جديدة",
+            "join":      "انضم إلى القنوات والمجموعات الطبية المصنفة",
+        }.get(nxt["key"], "")
+        text += f"\n💡 **الخطوة التالية:** {nxt['label']}\n_{tip}_\n"
+    else:
+        text += "\n🎉 **أحسنت! جميع الخطوات مكتملة.**\n"
+
+    # ── Smart buttons ─────────────────────────────────────────────────────────
+    # Highlight the recommended next step with a special row
+    rows = []
+
+    # Next step highlight row
+    next_btn_map = {
+        "accounts": ("➕ ربط حساب جديد ◄",    b"add_acc"),
+        "channels": ("📺 إنشاء القنوات السبع ◄", b"make_ch"),
+        "sources":  ("🔗 إضافة مصدر ◄",         b"add_src"),
+        "harvest":  ("🌾 بدء الحصاد ◄",          b"harvest"),
+        "sort":     (("▶️ استئناف الفرز ◄" if last > 0 else "⚡ بدء الفرز ◄"), b"run_sort"),
+        "discover": ("🧠 اكتشاف ذكي ◄",          b"smart_discover"),
+        "join":     ("🤝 انضمام ذكي ◄",           b"smart_join"),
+    }
+    if nxt and nxt["key"] in next_btn_map:
+        lbl, dat = next_btn_map[nxt["key"]]
+        rows.append([Button.inline(lbl, dat)])
+
+    # Standard grid
+    rows += [
+        [Button.inline("➕ ربط حساب",  b"add_acc"),  Button.inline("👤 الحسابات",  b"list_acc")],
+        [Button.inline("📺 القنوات",   b"make_ch"),  Button.inline("🔗 المصادر",   b"list_src")],
+        [Button.inline("✏️ إضافة مصدر",b"add_src"),  Button.inline("🌾 حصاد",      b"harvest")],
+        [Button.inline("⚡ فرز",       b"run_sort"), Button.inline("🧠 اكتشاف",    b"smart_discover")],
+        [Button.inline("🤝 انضمام",    b"smart_join"),Button.inline("📊 إحصائيات", b"stats")],
+        [Button.inline("🧹 مسح الذاكرة", b"clear_mem")],
+    ]
+
+    return text, rows
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Nav helpers — reusable nav row + post-step guidance
+# ─────────────────────────────────────────────────────────────────────────────
+
+def nav_row(prev_step_btn: bytes | None = None) -> list:
+    """Bottom navigation: [◀ back step] [🏠 home]."""
+    row = []
+    if prev_step_btn:
+        row.append(Button.inline("◀️ رجوع", prev_step_btn))
+    row.append(Button.inline("🏠 القائمة الرئيسية", b"home"))
+    return row
+
+
+async def send_next_step_hint(next_key: str, db: dict):
+    """After completing a step, tell user what to do next."""
+    flow = get_flow_status(db)
+    nxt  = flow["next"]
+    if not nxt:
+        await status_msg(
+            "🎉 **جميع الخطوات مكتملة!**\n"
+            "البوت جاهز بالكامل. استخدم /start للوحة التحكم."
+        )
+        return
+
+    hints = {
+        "channels":  ("📺 القنوات",      b"make_ch"),
+        "sources":   ("🔗 إضافة مصدر",   b"add_src"),
+        "harvest":   ("🌾 بدء الحصاد",   b"harvest"),
+        "sort":      ("⚡ بدء الفرز",    b"run_sort"),
+        "discover":  ("🧠 اكتشاف ذكي",   b"smart_discover"),
+        "join":      ("🤝 انضمام ذكي",    b"smart_join"),
+    }
+    if nxt["key"] in hints:
+        lbl, dat = hints[nxt["key"]]
+        await bot.send_message(
+            OWNER_ID,
+            f"✅ **تم!** الخطوة التالية الموصى بها:\n\n"
+            f"**{nxt['n']}. {nxt['label']}** — _{nxt['detail']}_",
+            buttons=[[Button.inline(f"⏭️ {lbl}", dat)], nav_row()],
+            parse_mode="md",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# /start & 🏠 Home
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot.on(events.NewMessage(pattern="/start"))
 @owner_only
 async def start_handler(event):
-    buttons = [
-        [
-            Button.inline("➕ ربط حساب جديد",       b"add_acc"),
-            Button.inline("📺 إنشاء قنوات الأرشيف",  b"make_ch"),
-        ],
-        [
-            Button.inline("🔗 إضافة مصادر",   b"add_src"),
-            Button.inline("📋 عرض المصادر",   b"list_src"),
-        ],
-        [
-            Button.inline("🌾 حصاد الروابط",        b"harvest"),
-            Button.inline("⚡ بدء الفرز الشامل",    b"run_sort"),
-        ],
-        [
-            Button.inline("🧠 اكتشاف ذكي",           b"smart_discover"),
-            Button.inline("🤝 انضمام ذكي",           b"smart_join"),
-        ],
-        [
-            Button.inline("📊 إحصائيات",             b"stats"),
-            Button.inline("🧹 مسح الذاكرة",          b"clear_mem"),
-        ],
-        [
-            Button.inline("👤 عرض الحسابات",         b"list_acc"),
-        ],
-    ]
-    await event.respond(
-        "🏥 **نظام الفلترة الطبية الذكي**\n\n"
-        "**الترتيب المُوصى به للاستخدام:**\n"
-        "1️⃣ ربط حساب جديد\n"
-        "2️⃣ إنشاء قنوات الأرشيف السبع\n"
-        "3️⃣ إضافة المصادر (مجموعات الروابط)\n"
-        "4️⃣ حصاد الروابط\n"
-        "5️⃣ بدء الفرز الشامل\n"
-        "6️⃣ 🧠 اكتشاف ذكي (يجد روابط مشابهة تلقائياً)\n"
-        "7️⃣ 🤝 انضمام ذكي للروابط المرتبة\n\n"
-        "اختر من القائمة أدناه:",
-        buttons=buttons,
-        parse_mode="md",
-    )
+    db.update(load_db())
+    text, buttons = build_dashboard(db)
+    await event.respond(text, buttons=buttons, parse_mode="md")
+
+
+@bot.on(events.CallbackQuery(data=b"home"))
+@owner_only
+async def home_handler(event):
+    await event.answer()
+    db.update(load_db())
+    text, buttons = build_dashboard(db)
+    await event.respond(text, buttons=buttons, parse_mode="md")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Add account
+# Step 1 — Add account
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot.on(events.CallbackQuery(data=b"add_acc"))
 @owner_only
 async def add_acc_handler(event):
     await event.answer()
+    count = len(db.get("accounts", []))
+
+    await event.respond(
+        f"**①  ربط حساب تيليجرام**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"الحسابات المرتبطة حالياً: **{count}**\n\n"
+        f"📱 أرسل رقم الهاتف بالصيغة الدولية:\n"
+        f"`+9671234567890`",
+        buttons=[nav_row()],
+        parse_mode="md",
+    )
+
     async with bot.conversation(OWNER_ID, timeout=120) as conv:
-        await conv.send_message(
-            "📱 أرسل رقم الهاتف بالصيغة الدولية:\n"
-            "مثال: `+9671234567890`"
-        )
         phone_msg = await conv.get_response()
         phone     = phone_msg.text.strip()
 
         await conv.send_message("⏳ جاري إرسال كود التحقق...")
-
         success, result = await AccountManager.add_account_interactive(conv, phone)
 
         if success:
@@ -155,29 +343,30 @@ async def add_acc_handler(event):
             if is_new:
                 db["accounts"].append(result)
                 save_db(db)
+
             info = await AccountManager.get_account_info(result)
             await conv.send_message(
-                f"✅ تم ربط الحساب بنجاح!\n\n"
-                f"👤 **الاسم:** {info['name']}\n"
-                f"📱 **المعرف:** {info['username']}\n"
-                f"☎️ **الهاتف:** {info['phone']}"
+                f"✅ **تم ربط الحساب بنجاح!**\n\n"
+                f"👤 {info['name']}  {info['username']}\n"
+                f"☎️ {info['phone']}",
+                parse_mode="md",
             )
-            # Auto-add new account to existing archive channels
+
             if is_new and db.get("channels"):
-                await conv.send_message(
-                    "⏳ جاري إضافة الحساب الجديد إلى قنوات الأرشيف الست..."
-                )
+                await conv.send_message("⏳ جاري إضافة الحساب إلى قنوات الأرشيف...")
                 try:
                     await add_account_to_channels(result, db)
-                    await conv.send_message(
-                        "✅ تم إضافة الحساب إلى جميع قنوات الأرشيف كمسؤول."
-                    )
+                    await conv.send_message("✅ تم إضافة الحساب لجميع القنوات كمسؤول.")
                 except Exception as e:
-                    await conv.send_message(
-                        f"⚠️ لم يتمكن من إضافة الحساب للقنوات تلقائياً:\n{e}"
-                    )
+                    await conv.send_message(f"⚠️ لم يتمكن من إضافته للقنوات تلقائياً:\n{e}")
+
+            await send_next_step_hint("channels", db)
         else:
-            await conv.send_message(f"❌ فشل ربط الحساب:\n{result}")
+            await conv.send_message(
+                f"❌ **فشل ربط الحساب:**\n{result}",
+                buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_acc")], nav_row()],
+                parse_mode="md",
+            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,83 +378,116 @@ async def add_acc_handler(event):
 async def list_acc_handler(event):
     await event.answer()
     if not db["accounts"]:
-        await event.respond("❌ لا توجد حسابات مرتبطة بعد.")
+        await event.respond(
+            "❌ لا توجد حسابات مرتبطة بعد.",
+            buttons=[[Button.inline("➕ ربط حساب الآن", b"add_acc")], nav_row()],
+        )
         return
 
-    lines = ["👤 **الحسابات المرتبطة:**\n"]
+    lines = [f"👤 **الحسابات المرتبطة ({len(db['accounts'])}):**\n"]
     for i, acc in enumerate(db["accounts"], 1):
         info = await AccountManager.get_account_info(acc)
-        lines.append(
-            f"{i}. **{info['name']}** {info['username']}\n"
-            f"   ☎️ {info['phone']}"
-        )
-    await event.respond("\n".join(lines), parse_mode="md")
+        lines.append(f"{i}. **{info['name']}** {info['username']}\n   ☎️ {info['phone']}")
+
+    await event.respond(
+        "\n".join(lines),
+        buttons=[[Button.inline("➕ إضافة حساب آخر", b"add_acc")], nav_row()],
+        parse_mode="md",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Create the 6 archive channels
+# Step 2 — Create archive channels
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot.on(events.CallbackQuery(data=b"make_ch"))
 @owner_only
 async def make_ch_handler(event):
     await event.answer("⏳ جاري إنشاء القنوات...")
+
     if not db["accounts"]:
-        await event.respond("❌ يجب ربط حساب أولاً قبل إنشاء القنوات.")
+        await event.respond(
+            "🔒 **الخطوة 2 مقفلة**\n\nيجب ربط حساب أولاً (الخطوة 1) قبل إنشاء القنوات.",
+            buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
+            parse_mode="md",
+        )
+        return
+
+    existing = len(db.get("channels", {}))
+    if existing >= 7:
+        await event.respond(
+            f"✅ **القنوات السبع موجودة بالفعل!**\n\n"
+            + "\n".join(f"• {v}" for v in CHANNEL_KEYS.values()),
+            buttons=[[Button.inline("⏭️ إضافة مصادر ◄", b"add_src")], nav_row()],
+            parse_mode="md",
+        )
         return
 
     await event.respond(
-        "🔨 **جاري إنشاء قنوات الأرشيف السبع...**\n\n"
-        "📢 أرشيف - القنوات\n"
-        "👥 أرشيف - المجموعات\n"
-        "💀 أرشيف - الروابط المنتهية\n"
-        "🔐 أرشيف - روابط الدعوة\n"
-        "📂 أرشيف - المجلدات (Addlist)\n"
-        "🤖 أرشيف - البوتات\n"
-        "🌐 أرشيف - روابط أخرى (غير طبية)",
+        "**②  إنشاء قنوات الأرشيف السبع**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "⏳ جاري الإنشاء، يرجى الانتظار...\n\n"
+        + "\n".join(f"🔄 {v}" for v in CHANNEL_KEYS.values()),
         parse_mode="md",
     )
+
     created = await create_archive_channels(db["accounts"][0], db, save_db)
 
-    lines = ["✅ **نتائج إنشاء القنوات السبع:**\n"]
+    lines = ["✅ **تم إنشاء قنوات الأرشيف السبع:**\n"]
     for key, ch_id in created.items():
         title  = CHANNEL_KEYS.get(key, key)
-        status = f"✅ تم إنشاؤها (ID: `{ch_id}`)" if isinstance(ch_id, int) else f"⚠️ {ch_id}"
-        lines.append(f"• **{title}**: {status}")
+        status = f"✅ `{ch_id}`" if isinstance(ch_id, int) else f"⚠️ {ch_id}"
+        lines.append(f"• {title}: {status}")
 
-    await event.respond("\n".join(lines), parse_mode="md")
+    await event.respond(
+        "\n".join(lines),
+        buttons=[[Button.inline("⏭️ إضافة مصادر ◄", b"add_src")], nav_row(b"add_acc")],
+        parse_mode="md",
+    )
+    await send_next_step_hint("sources", db)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Add sources
+# Step 3 — Add sources
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot.on(events.CallbackQuery(data=b"add_src"))
 @owner_only
 async def add_src_handler(event):
     await event.answer()
+
+    current = len(db.get("sources", []))
+    await event.respond(
+        f"**③  إضافة مصادر الروابط**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"المصادر الحالية: **{current}**\n\n"
+        f"📋 أرسل روابط مجموعات تيليجرام (كل رابط في سطر):\n"
+        f"`https://t.me/medical_links_group`\n"
+        f"`https://t.me/+AbCdEfGh1234`",
+        buttons=[nav_row(b"make_ch")],
+        parse_mode="md",
+    )
+
     async with bot.conversation(OWNER_ID, timeout=180) as conv:
-        await conv.send_message(
-            "🔗 أرسل روابط مجموعات الروابط المصدر.\n"
-            "يمكنك إرسال رابط واحد أو عدة روابط (كل رابط في سطر).\n\n"
-            "**مثال:**\n"
-            "`https://t.me/medical_links_group`\n"
-            "`https://t.me/+AbCdEfGh1234`"
-        )
-        links_msg  = await conv.get_response()
-        raw        = links_msg.text.strip().split("\n")
-        new_sources = [l.strip() for l in raw if l.strip()]
+        links_msg   = await conv.get_response()
+        new_sources = [l.strip() for l in links_msg.text.strip().split("\n") if l.strip()]
 
         added = 0
         for src in new_sources:
             if src not in db["sources"]:
                 db["sources"].append(src)
                 added += 1
-
         save_db(db)
+
         await conv.send_message(
-            f"✅ تمت إضافة {added} مصدر جديد.\n"
-            f"📋 إجمالي المصادر: {len(db['sources'])}"
+            f"✅ **تمت إضافة {added} مصدر جديد.**\n"
+            f"📋 إجمالي المصادر: **{len(db['sources'])}**",
+            buttons=[
+                [Button.inline("✏️ إضافة المزيد", b"add_src")],
+                [Button.inline("⏭️ بدء الحصاد ◄",  b"harvest")],
+                nav_row(b"make_ch"),
+            ],
+            parse_mode="md",
         )
 
 
@@ -278,33 +500,54 @@ async def add_src_handler(event):
 async def list_src_handler(event):
     await event.answer()
     if not db["sources"]:
-        await event.respond("❌ لا توجد مصادر مضافة بعد.")
+        await event.respond(
+            "❌ لا توجد مصادر مضافة بعد.",
+            buttons=[[Button.inline("✏️ إضافة مصدر ◄", b"add_src")], nav_row()],
+        )
         return
+
     lines = [f"📋 **المصادر ({len(db['sources'])}):**\n"]
     for i, src in enumerate(db["sources"], 1):
         lines.append(f"{i}. `{src}`")
-    await event.respond("\n".join(lines), parse_mode="md")
+
+    await event.respond(
+        "\n".join(lines),
+        buttons=[[Button.inline("✏️ إضافة مصادر جديدة", b"add_src")], nav_row()],
+        parse_mode="md",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Harvest
+# Step 4 — Harvest
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot.on(events.CallbackQuery(data=b"harvest"))
 @owner_only
 async def harvest_handler(event):
     await event.answer()
+
     if not db["accounts"]:
-        await event.respond("❌ يجب ربط حساب أولاً.")
+        await event.respond(
+            "🔒 يجب ربط حساب أولاً.",
+            buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
+        )
         return
     if not db["sources"]:
-        await event.respond("❌ يجب إضافة مصادر أولاً.")
+        await event.respond(
+            "🔒 يجب إضافة مصادر أولاً.",
+            buttons=[[Button.inline("✏️ إضافة مصدر ◄", b"add_src")], nav_row()],
+        )
         return
 
+    existing = get_raw_count()
     await event.respond(
-        "🌾 **بدأ حصاد الروابط...**\n"
-        "يتم سحب الروابط من جميع المصادر وحفظها في القائمة الخام.\n"
-        "سيتم إرسال تحديثات دورية.",
+        f"**④  حصاد الروابط**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 المصادر: {len(db['sources'])}\n"
+        f"📦 الروابط الموجودة: {existing:,}\n\n"
+        f"🌾 جاري السحب من جميع المصادر...\n"
+        f"_ستصلك تحديثات دورية._",
+        buttons=[nav_row(b"add_src")],
         parse_mode="md",
     )
 
@@ -314,55 +557,68 @@ async def harvest_handler(event):
         session=db["accounts"][0],
     )
 
+    new_count = len(harvested) - existing
     await status_msg(
-        f"✅ **اكتمل الحصاد!**\n"
-        f"📦 إجمالي الروابط في القائمة الخام: {len(harvested)}"
+        f"✅ **اكتمل الحصاد!**\n\n"
+        f"📦 إجمالي الروابط: **{len(harvested):,}**\n"
+        f"🆕 روابط جديدة: **{new_count:,}**"
     )
-
-    buttons = [
-        [Button.inline("⚡ بدء الفرز الآن", b"run_sort")],
-        [Button.inline("⏳ تأجيل الفرز",    b"start")],
-    ]
     await bot.send_message(
         OWNER_ID,
-        f"🎉 تم جمع **{len(harvested)}** رابط.\nهل تريد بدء الفرز الآن؟",
-        buttons=buttons,
+        f"🎉 تم جمع **{len(harvested):,}** رابط!\nهل تريد بدء الفرز الآن؟",
+        buttons=[
+            [Button.inline("⏭️ بدء الفرز الآن ◄", b"run_sort")],
+            nav_row(b"add_src"),
+        ],
         parse_mode="md",
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sort
+# Step 5 — Sort
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot.on(events.CallbackQuery(data=b"run_sort"))
 @owner_only
 async def run_sort_handler(event):
     await event.answer()
+
     if not db["accounts"]:
-        await event.respond("❌ يجب ربط حساب أولاً.")
+        await event.respond(
+            "🔒 يجب ربط حساب أولاً.",
+            buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
+        )
         return
     if not db.get("channels"):
-        await event.respond("❌ يجب إنشاء القنوات أولاً.")
+        await event.respond(
+            "🔒 يجب إنشاء القنوات أولاً.",
+            buttons=[[Button.inline("📺 إنشاء القنوات ◄", b"make_ch")], nav_row()],
+        )
         return
 
     raw = load_raw_links()
     if not raw:
-        await event.respond("❌ لا توجد روابط في القائمة الخام. قم بتشغيل الحصاد أولاً.")
+        await event.respond(
+            "🔒 لا توجد روابط. قم بتشغيل الحصاد أولاً.",
+            buttons=[[Button.inline("🌾 بدء الحصاد ◄", b"harvest")], nav_row()],
+        )
         return
 
     start_from = db.get("progress", {}).get("last_sorted_index", 0)
-    if start_from > 0:
-        await event.respond(
-            f"🔁 استئناف الفرز من حيث توقفنا (الرابط رقم {start_from + 1})...",
-            parse_mode="md",
-        )
-    else:
-        await event.respond(
-            f"⚡ **بدأ الفرز الشامل على {len(raw)} رابط...**\n"
-            "سيتم تحديثك دورياً بالتقدم.",
-            parse_mode="md",
-        )
+    remaining  = len(raw) - start_from
+    pct        = int(start_from / len(raw) * 100) if raw else 0
+
+    await event.respond(
+        f"**⑤  الفرز الشامل**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 الإجمالي: **{len(raw):,}** رابط\n"
+        f"✅ تم فحصه: **{start_from:,}** ({pct}%)\n"
+        f"⏳ المتبقي: **{remaining:,}** رابط\n\n"
+        + ("🔄 **استئناف من حيث توقفنا...**" if start_from > 0 else "⚡ **بدء الفرز الشامل...**")
+        + "\n_ستصلك تحديثات دورية لكل دفعة._",
+        buttons=[nav_row(b"harvest")],
+        parse_mode="md",
+    )
 
     await run_sorter(
         status_callback=status_msg,
@@ -372,64 +628,164 @@ async def run_sort_handler(event):
         start_from=start_from,
     )
 
+    await bot.send_message(
+        OWNER_ID,
+        f"🎯 **اكتمل الفرز!**\n\n"
+        f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,}\n"
+        f"💀 تالفة: {db['stats'].get('total_broken', 0):,}\n"
+        f"📊 الإجمالي: {db['stats'].get('total_found', 0):,}",
+        buttons=[
+            [Button.inline("⏭️ اكتشاف ذكي ◄",    b"smart_discover")],
+            [Button.inline("⏭️ انضمام ذكي ◄",     b"smart_join")],
+            nav_row(b"harvest"),
+        ],
+        parse_mode="md",
+    )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Smart Join — Step 1: Choose source channel
+# Step 6 — Smart Discovery
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bot.on(events.CallbackQuery(data=b"smart_discover"))
+@owner_only
+async def smart_discover_handler(event):
+    await event.answer()
+
+    if not db["accounts"]:
+        await event.respond(
+            "🔒 يجب ربط حساب أولاً.",
+            buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
+        )
+        return
+
+    raw_count = get_raw_count()
+    await event.respond(
+        f"**⑥  الاكتشاف الذكي**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📦 الروابط الحالية: {raw_count:,}\n\n"
+        f"🧠 يبحث بـ **5 طرق متزامنة:**\n"
+        f"  1️⃣ بحث بكلمات مفتاحية (80+ استعلام)\n"
+        f"  2️⃣ استكشاف قنوات مشابهة\n"
+        f"  3️⃣ فحص مجموعات المصادر الحالية\n"
+        f"  4️⃣ توسيع المجلدات (Addlist)\n"
+        f"  5️⃣ رصد الإشارات والمنشورات\n\n"
+        f"هل تريد البدء؟",
+        buttons=[
+            [Button.inline("🚀 ابدأ الاكتشاف الآن", b"confirm_discover")],
+            nav_row(b"run_sort"),
+        ],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=b"confirm_discover"))
+@owner_only
+async def confirm_discover_handler(event):
+    await event.answer("🧠 جاري الاكتشاف...")
+
+    archive_ids  = {k: v for k, v in db.get("channels", {}).items() if isinstance(v, int)}
+    source_links = db.get("sources", [])
+
+    await event.respond(
+        "🧠 **بدأ الاكتشاف الذكي...**\n_ستصلك تحديثات مستمرة._",
+        buttons=[nav_row(b"run_sort")],
+        parse_mode="md",
+    )
+
+    new_count = await run_smart_discovery(
+        status_callback=status_msg,
+        db=db,
+        accounts=db["accounts"],
+        archive_channel_ids=archive_ids,
+        source_links=source_links,
+    )
+
+    if new_count > 0:
+        await bot.send_message(
+            OWNER_ID,
+            f"🎉 اكتُشف **{new_count:,}** رابط جديد!\nهل تريد الفرز الآن؟",
+            buttons=[
+                [Button.inline("⏭️ فرز الروابط الجديدة ◄", b"run_sort")],
+                nav_row(b"run_sort"),
+            ],
+            parse_mode="md",
+        )
+    else:
+        await bot.send_message(
+            OWNER_ID,
+            "ℹ️ لم يُكتشف روابط جديدة. المصادر الحالية قد تكون مستنفدة.",
+            buttons=[
+                [Button.inline("⏭️ انضمام ذكي ◄", b"smart_join")],
+                nav_row(b"run_sort"),
+            ],
+            parse_mode="md",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 7 — Smart Join
 # ─────────────────────────────────────────────────────────────────────────────
 
 @bot.on(events.CallbackQuery(data=b"smart_join"))
 @owner_only
 async def smart_join_handler(event):
     await event.answer()
+
     if not db["accounts"]:
-        await event.respond("❌ يجب ربط حساب أولاً.")
+        await event.respond(
+            "🔒 يجب ربط حساب أولاً.",
+            buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
+        )
         return
     if not db.get("channels"):
-        await event.respond("❌ يجب إنشاء القنوات وتشغيل الفرز أولاً حتى تكون هناك روابط للانضمام.")
+        await event.respond(
+            "🔒 يجب إنشاء القنوات وتشغيل الفرز أولاً.",
+            buttons=[[Button.inline("📺 إنشاء القنوات ◄", b"make_ch")], nav_row()],
+        )
         return
 
-    # Build channel-selection buttons from the 6 archive channels
-    channel_buttons = []
     key_map = {
-        "channels": (b"jch_channels", "📢 من قناة القنوات"),
-        "groups":   (b"jch_groups",   "👥 من قناة المجموعات"),
-        "invite":   (b"jch_invite",   "🔐 من قناة روابط الدعوة"),
-        "addlist":  (b"jch_addlist",  "📂 من قناة المجلدات"),
-        "bots":     (b"jch_bots",     "🤖 من قناة البوتات"),
-        "other":    (b"jch_other",    "🌐 من قناة الروابط الأخرى"),
+        "channels": (b"jch_channels", "📢 قناة القنوات"),
+        "groups":   (b"jch_groups",   "👥 قناة المجموعات"),
+        "invite":   (b"jch_invite",   "🔐 روابط الدعوة"),
+        "addlist":  (b"jch_addlist",  "📂 المجلدات"),
+        "bots":     (b"jch_bots",     "🤖 البوتات"),
+        "other":    (b"jch_other",    "🌐 الروابط الأخرى"),
     }
+    channel_buttons = []
     for key, (cb_data, label) in key_map.items():
         if key in db.get("channels", {}):
             channel_buttons.append([Button.inline(label, cb_data)])
 
     if not channel_buttons:
-        await event.respond("❌ لا توجد قنوات أرشيف منشأة بعد.")
+        await event.respond(
+            "🔒 لا توجد قنوات أرشيف منشأة بعد.",
+            buttons=[[Button.inline("📺 إنشاء القنوات ◄", b"make_ch")], nav_row()],
+        )
         return
 
-    channel_buttons.append([Button.inline("❌ إلغاء", b"start")])
-
+    joined_count = len(db.get("joined_links", []))
     await event.respond(
-        "🤝 **الانضمام الذكي**\n\n"
-        "اختر من أيّ قناة أرشيف تريد أن يجمع البوت الروابط للانضمام إليها:",
-        buttons=channel_buttons,
+        f"**⑦  الانضمام الذكي**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🤝 تم الانضمام حتى الآن: **{joined_count:,}**\n\n"
+        f"اختر القناة التي تريد الانضمام إلى روابطها:",
+        buttons=channel_buttons + [nav_row(b"smart_discover")],
         parse_mode="md",
     )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Smart Join — Step 2: How many links (triggered by channel choice)
-# ─────────────────────────────────────────────────────────────────────────────
-
 async def _ask_join_count_and_start(event, source_key: str):
-    """Ask how many links, then start the smart joiner."""
     await event.answer()
     channel_label = CHANNEL_KEYS.get(source_key, source_key)
 
     async with bot.conversation(OWNER_ID, timeout=120) as conv:
         await conv.send_message(
-            f"✅ المصدر المختار: **{channel_label}**\n\n"
-            "📊 كم رابطاً تريد الانضمام إليه؟\n"
-            "أرسل رقماً (مثال: `20`):"
+            f"✅ المصدر: **{channel_label}**\n\n"
+            f"📊 كم رابطاً تريد الانضمام إليه؟ (مثال: `20`)",
+            buttons=[nav_row(b"smart_join")],
+            parse_mode="md",
         )
         count_msg = await conv.get_response()
 
@@ -438,18 +794,19 @@ async def _ask_join_count_and_start(event, source_key: str):
             if max_joins <= 0:
                 raise ValueError
         except ValueError:
-            await conv.send_message("❌ رقم غير صحيح. تم الإلغاء.")
+            await conv.send_message(
+                "❌ رقم غير صحيح. تم الإلغاء.",
+                buttons=[[Button.inline("🔄 حاول مرة أخرى", b"smart_join")], nav_row()],
+            )
             return
 
         await conv.send_message(
-            f"⏳ سيبدأ البوت الانضمام إلى **{max_joins}** رابط من **{channel_label}**\n"
-            f"🔒 البوت يحمي الحسابات تلقائياً بنظام الدفعات الذكي.\n"
-            f"سيتم إرسال تحديثات لكل رابط."
+            f"⏳ سيبدأ الانضمام إلى **{max_joins}** رابط من **{channel_label}**\n"
+            f"🛡 نظام الحماية الذكي مفعّل (دفعات متقطعة).\n"
+            f"_سيتم إرسال تحديث لكل رابط._",
+            parse_mode="md",
         )
 
-    # Collect links from the chosen archive channel messages
-    # We read raw_links.json filtered to links already sorted into that channel.
-    # Alternatively, use the channel itself as source (read messages from it).
     source_ch_id = db["channels"].get(source_key)
     links_to_join = []
 
@@ -458,10 +815,7 @@ async def _ask_join_count_and_start(event, source_key: str):
             async with TelegramClient(db["accounts"][0], API_ID, API_HASH) as client:
                 async for msg in client.iter_messages(int(source_ch_id), limit=500):
                     if msg.text:
-                        import re
-                        found = re.findall(
-                            r"https?://t\.me/[\+a-zA-Z0-9_/]+", msg.text
-                        )
+                        found = re.findall(r"https?://t\.me/[\+a-zA-Z0-9_/]+", msg.text)
                         for lnk in found:
                             lnk = lnk.strip().rstrip("/")
                             if lnk not in links_to_join:
@@ -473,8 +827,13 @@ async def _ask_join_count_and_start(event, source_key: str):
 
     if not links_to_join:
         await status_msg(
-            "❌ لم يتم العثور على روابط في القناة المختارة.\n"
-            "تأكد من تشغيل الفرز أولاً."
+            "❌ لم يتم العثور على روابط في القناة.\n"
+            "تأكد من تشغيل الفرز أولاً.",
+            # buttons arg not valid in status_msg - user sends a new message
+        )
+        await bot.send_message(
+            OWNER_ID, "❌ لا روابط في القناة.",
+            buttons=[[Button.inline("⚡ تشغيل الفرز أولاً ◄", b"run_sort")], nav_row()],
         )
         return
 
@@ -492,112 +851,30 @@ async def _ask_join_count_and_start(event, source_key: str):
 async def jch_channels(event):
     await _ask_join_count_and_start(event, "channels")
 
-
 @bot.on(events.CallbackQuery(data=b"jch_groups"))
 @owner_only
 async def jch_groups(event):
     await _ask_join_count_and_start(event, "groups")
-
 
 @bot.on(events.CallbackQuery(data=b"jch_invite"))
 @owner_only
 async def jch_invite(event):
     await _ask_join_count_and_start(event, "invite")
 
-
 @bot.on(events.CallbackQuery(data=b"jch_addlist"))
 @owner_only
 async def jch_addlist(event):
     await _ask_join_count_and_start(event, "addlist")
-
 
 @bot.on(events.CallbackQuery(data=b"jch_bots"))
 @owner_only
 async def jch_bots(event):
     await _ask_join_count_and_start(event, "bots")
 
-
 @bot.on(events.CallbackQuery(data=b"jch_other"))
 @owner_only
 async def jch_other(event):
     await _ask_join_count_and_start(event, "other")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Smart Discovery — find new medical links automatically (5 methods)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@bot.on(events.CallbackQuery(data=b"smart_discover"))
-@owner_only
-async def smart_discover_handler(event):
-    await event.answer()
-    if not db["accounts"]:
-        await event.respond("❌ يجب ربط حساب أولاً.")
-        return
-
-    raw_count = get_raw_count()
-    buttons = [
-        [Button.inline("🚀 ابدأ الاكتشاف الآن", b"confirm_discover")],
-        [Button.inline("❌ إلغاء",               b"start")],
-    ]
-    await event.respond(
-        "🧠 **الاكتشاف الذكي**\n\n"
-        "سيبحث البوت عن روابط طبية جديدة باستخدام **5 طرق متزامنة:**\n\n"
-        "1️⃣ **بحث بكلمات مفتاحية** — أكثر من 80 استعلام بحثي عربي وإنجليزي\n"
-        "2️⃣ **قنوات مشابهة** — نظام التوصيات الداخلي في تيليجرام\n"
-        "3️⃣ **روابط من البيو** — يقرأ وصف كل قناة ويستخرج الروابط المذكورة\n"
-        "4️⃣ **روابط من الرسائل** — يقرأ آخر الرسائل في مجموعات المصادر\n"
-        "5️⃣ **أنماط اسم المستخدم** — يولّد اسماء مشابهة للقنوات الموجودة\n\n"
-        f"📦 روابط موجودة حالياً: **{raw_count}**\n"
-        "⚠️ العملية قد تأخذ 10-30 دقيقة حسب عدد المصادر.",
-        buttons=buttons,
-        parse_mode="md",
-    )
-
-
-@bot.on(events.CallbackQuery(data=b"confirm_discover"))
-@owner_only
-async def confirm_discover_handler(event):
-    await event.answer("⏳ جاري البدء...")
-    if not db["accounts"]:
-        await event.respond("❌ لا توجد حسابات.")
-        return
-
-    # Build archive channel IDs map (only integer IDs)
-    archive_ids = {
-        k: v for k, v in db.get("channels", {}).items()
-        if isinstance(v, int)
-    }
-
-    source_links = db.get("sources", [])
-
-    await event.respond(
-        "🧠 **بدأ الاكتشاف الذكي...**\n"
-        "ستصلك تحديثات مستمرة. لا تغلق البوت.",
-        parse_mode="md",
-    )
-
-    new_count = await run_smart_discovery(
-        status_callback=status_msg,
-        db=db,
-        accounts=db["accounts"],
-        archive_channel_ids=archive_ids,
-        source_links=source_links,
-    )
-
-    if new_count > 0:
-        buttons = [
-            [Button.inline("⚡ فرز الروابط الجديدة الآن", b"run_sort")],
-            [Button.inline("⏳ تأجيل الفرز",              b"start")],
-        ]
-        await bot.send_message(
-            OWNER_ID,
-            f"🎉 اكتُشف **{new_count}** رابط جديد!\nهل تريد الفرز الآن؟",
-            buttons=buttons,
-            parse_mode="md",
-        )
-    else:
-        await status_msg("ℹ️ لم يُكتشف روابط جديدة. المصادر الحالية قد تكون مستنفدة.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -611,20 +888,29 @@ async def stats_handler(event):
     stats = db.get("stats", {})
     seen  = get_seen_count()
     raw   = get_raw_count()
+    last  = db.get("progress", {}).get("last_sorted_index", 0)
+    pct   = int(last / raw * 100) if raw else 0
+
+    bar_filled = "█" * (pct // 10)
+    bar_empty  = "░" * (10 - pct // 10)
 
     text = (
-        "📊 **إحصائيات النظام:**\n\n"
-        f"📦 **الروابط الخام المجمعة:** {raw}\n"
-        f"🔍 **الروابط المفحوصة:** {seen}\n"
-        f"✅ **المرتبة بنجاح:** {stats.get('total_sorted', 0)}\n"
-        f"❌ **التالفة والخاصة:** {stats.get('total_broken', 0)}\n"
-        f"⏭️ **المتخطاة (مكررة):** {stats.get('total_skipped_duplicate', 0)}\n"
-        f"🤝 **تم الانضمام إليها:** {len(db.get('joined_links', []))}\n\n"
-        f"👤 **الحسابات المرتبطة:** {len(db.get('accounts', []))}\n"
+        "📊 **إحصائيات النظام**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"**الفرز:** {bar_filled}{bar_empty} {pct}%\n"
+        f"  ↳ {last:,} / {raw:,} رابط\n\n"
+        f"📦 **الروابط الخام:** {raw:,}\n"
+        f"🔍 **المفحوصة:** {seen:,}\n"
+        f"✅ **المرتبة بنجاح:** {stats.get('total_sorted', 0):,}\n"
+        f"❌ **التالفة/الخاصة:** {stats.get('total_broken', 0):,}\n"
+        f"⏭️ **المتخطاة (مكررة):** {stats.get('total_skipped_duplicate', 0):,}\n"
+        f"🤝 **تم الانضمام إليها:** {len(db.get('joined_links', [])):,}\n\n"
+        f"👤 **الحسابات:** {len(db.get('accounts', []))}\n"
         f"🔗 **المصادر:** {len(db.get('sources', []))}\n"
-        f"📺 **القنوات المنشأة:** {len(db.get('channels', {}))}"
+        f"📺 **القنوات:** {len(db.get('channels', {}))}/7"
     )
-    await event.respond(text, parse_mode="md")
+
+    await event.respond(text, buttons=[nav_row()], parse_mode="md")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -635,17 +921,18 @@ async def stats_handler(event):
 @owner_only
 async def clear_mem_handler(event):
     await event.answer()
-    buttons = [
-        [
-            Button.inline("✅ نعم، امسح الذاكرة", b"confirm_clear"),
-            Button.inline("❌ إلغاء",              b"start"),
-        ]
-    ]
     await event.respond(
-        "⚠️ **تحذير:** سيتم مسح ذاكرة الروابط المفحوصة.\n"
-        "هذا يعني أن البوت سيعيد فحص جميع الروابط من البداية.\n\n"
-        "هل أنت متأكد؟",
-        buttons=buttons,
+        "⚠️ **تحذير — مسح الذاكرة**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "سيتم مسح:\n"
+        "• ذاكرة الروابط المفحوصة\n"
+        "• مؤشر التقدم في الفرز\n\n"
+        "هذا يعني إعادة الفرز من البداية.\n"
+        "**هل أنت متأكد؟**",
+        buttons=[
+            [Button.inline("✅ نعم، امسح الذاكرة", b"confirm_clear")],
+            [Button.inline("❌ إلغاء", b"home")],
+        ],
         parse_mode="md",
     )
 
@@ -656,14 +943,16 @@ async def confirm_clear_handler(event):
     await event.answer()
     clear_seen()
     db["stats"] = {
-        "total_found": 0,
-        "total_sorted": 0,
-        "total_broken": 0,
-        "total_skipped_duplicate": 0,
+        "total_found": 0, "total_sorted": 0,
+        "total_broken": 0, "total_skipped_duplicate": 0,
     }
     db["progress"]["last_sorted_index"] = 0
     save_db(db)
-    await event.respond("✅ تم مسح الذاكرة. يمكنك الآن بدء الفرز من جديد.")
+    await event.respond(
+        "✅ **تم مسح الذاكرة.**\nيمكنك الآن بدء الفرز من جديد.",
+        buttons=[[Button.inline("⚡ بدء الفرز ◄", b"run_sort")], nav_row()],
+        parse_mode="md",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

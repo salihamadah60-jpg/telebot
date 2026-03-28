@@ -16,7 +16,6 @@ args = ["pnpm", "store", "prune"]
 env = { "CI" = "true" }
 
 [workflows]
-runButton = "Project"
 
 [[workflows.workflow]]
 name = "artifacts/api-server: API Server"
@@ -65,19 +64,6 @@ author = 56718866
 task = "packager.installForAll"
 
 [[workflows.workflow]]
-name = "keep live"
-mode = "sequential"
-author = "agent"
-
-[workflows.workflow.metadata]
-outputType = "console"
-
-[[workflows.workflow.tasks]]
-task = "shell.exec"
-args = "cd bot && bash keep_alive.sh"
-waitForPort = 3000
-
-[[workflows.workflow]]
 name = "push"
 mode = "sequential"
 author = 56718866
@@ -97,15 +83,6 @@ args = "git init"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "git add ."
-
-[[workflows.workflow]]
-name = "Project"
-mode = "parallel"
-author = "agent"
-
-[[workflows.workflow.tasks]]
-task = "workflow.run"
-args = "keep live"
 
 [agent]
 stack = "PNPM_WORKSPACE"
