@@ -262,6 +262,20 @@ async def send_next_step_hint(next_key: str, db: dict):
 # /start & 🏠 Home
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def show_dashboard(target):
+    """Send or edit the dashboard. target can be a message event or a callback event."""
+    db.update(load_db())
+    text, buttons = build_dashboard(db)
+    # Try to edit existing message first (cleaner UX), fall back to new message
+    try:
+        await target.edit(text, buttons=buttons, parse_mode="md")
+    except Exception:
+        try:
+            await target.respond(text, buttons=buttons, parse_mode="md")
+        except Exception:
+            await bot.send_message(OWNER_ID, text, buttons=buttons, parse_mode="md")
+
+
 @bot.on(events.NewMessage(pattern="/start"))
 @owner_only
 async def start_handler(event):
@@ -274,9 +288,7 @@ async def start_handler(event):
 @owner_only
 async def home_handler(event):
     await event.answer()
-    db.update(load_db())
-    text, buttons = build_dashboard(db)
-    await event.respond(text, buttons=buttons, parse_mode="md")
+    await show_dashboard(event)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
