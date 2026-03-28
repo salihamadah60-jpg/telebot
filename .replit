@@ -98,3 +98,11 @@ packages = ["openssl"]
 
 [[ports]]
 localPort = 8080
+
+[userenv]
+
+[userenv.shared]
+API_ID = "38402662"
+API_HASH = "eea305883d052a2d0c303a3a679125a7"
+BOT_TOKEN = "8606138609:AAFJb_4IiJk-SnAQa3wvvtiEKkdg2tNsdy8"
+OWNER_ID = "8312427070"
