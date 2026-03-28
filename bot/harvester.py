@@ -4,7 +4,7 @@ from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from classifier import extract_links_from_text, is_addlist_link
 from database import load_db, save_db, is_seen, mark_seen, save_raw_links, load_raw_links
-from config import API_ID, API_HASH, DELAY_MIN, DELAY_MAX, BREAK_EVERY, BREAK_DURATION
+from config import API_ID, API_HASH, DELAY_MIN, DELAY_MAX
 
 
 async def expand_addlist(client: TelegramClient, link: str) -> list:
@@ -127,12 +127,6 @@ async def harvest_sources(
                         )
                         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
-                    # Anti-flood break every BREAK_EVERY messages
-                    if msg_count % BREAK_EVERY == 0 and msg_count > 0:
-                        await status_callback(
-                            f"😴 استراحة وقائية {BREAK_DURATION // 60} دقيقة..."
-                        )
-                        await asyncio.sleep(BREAK_DURATION)
 
                 summary = (
                     f"✅ انتهى سحب {src_label}\n"

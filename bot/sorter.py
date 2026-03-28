@@ -42,8 +42,6 @@ from config import (
     API_HASH,
     DELAY_MIN,
     DELAY_MAX,
-    BREAK_EVERY,
-    BREAK_DURATION,
     SWITCH_ACCOUNT_EVERY,
     MAX_CONCURRENT,
 )
@@ -349,11 +347,6 @@ async def run_sorter(
             acc_idx = (acc_idx + 1) % len(accounts)
             await status_callback(f"🔄 التبديل إلى الحساب: `{accounts[acc_idx]}`")
 
-        if op_count > 0 and op_count % BREAK_EVERY < batch_size:
-            await status_callback(
-                f"😴 استراحة وقائية {BREAK_DURATION // 60} دقيقة لتجنب الحظر..."
-            )
-            await asyncio.sleep(BREAK_DURATION)
 
         session      = accounts[acc_idx % len(accounts)]
         account_name = session
