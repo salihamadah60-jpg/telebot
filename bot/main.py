@@ -60,7 +60,13 @@ bot = TelegramClient("bot_controller", API_ID, API_HASH)
 def owner_only(func):
     async def wrapper(event):
         if event.sender_id != OWNER_ID:
-            await event.answer("🚫 غير مصرح لك.")
+            try:
+                await event.answer("🚫 غير مصرح لك.")
+            except Exception:
+                try:
+                    await event.respond("🚫 غير مصرح لك.")
+                except Exception:
+                    pass
             return
         await func(event)
     return wrapper
@@ -109,7 +115,7 @@ async def start_handler(event):
         "🏥 **نظام الفلترة الطبية الذكي**\n\n"
         "**الترتيب المُوصى به للاستخدام:**\n"
         "1️⃣ ربط حساب جديد\n"
-        "2️⃣ إنشاء قنوات الأرشيف الست\n"
+        "2️⃣ إنشاء قنوات الأرشيف السبع\n"
         "3️⃣ إضافة المصادر (مجموعات الروابط)\n"
         "4️⃣ حصاد الروابط\n"
         "5️⃣ بدء الفرز الشامل\n"
@@ -206,18 +212,19 @@ async def make_ch_handler(event):
         return
 
     await event.respond(
-        "🔨 **جاري إنشاء قنوات الأرشيف الست...**\n\n"
+        "🔨 **جاري إنشاء قنوات الأرشيف السبع...**\n\n"
         "📢 أرشيف - القنوات\n"
         "👥 أرشيف - المجموعات\n"
         "💀 أرشيف - الروابط المنتهية\n"
         "🔐 أرشيف - روابط الدعوة\n"
         "📂 أرشيف - المجلدات (Addlist)\n"
-        "🤖 أرشيف - البوتات",
+        "🤖 أرشيف - البوتات\n"
+        "🌐 أرشيف - روابط أخرى (غير طبية)",
         parse_mode="md",
     )
     created = await create_archive_channels(db["accounts"][0], db, save_db)
 
-    lines = ["✅ **نتائج إنشاء القنوات الست:**\n"]
+    lines = ["✅ **نتائج إنشاء القنوات السبع:**\n"]
     for key, ch_id in created.items():
         title  = CHANNEL_KEYS.get(key, key)
         status = f"✅ تم إنشاؤها (ID: `{ch_id}`)" if isinstance(ch_id, int) else f"⚠️ {ch_id}"
@@ -386,6 +393,7 @@ async def smart_join_handler(event):
         "invite":   (b"jch_invite",   "🔐 من قناة روابط الدعوة"),
         "addlist":  (b"jch_addlist",  "📂 من قناة المجلدات"),
         "bots":     (b"jch_bots",     "🤖 من قناة البوتات"),
+        "other":    (b"jch_other",    "🌐 من قناة الروابط الأخرى"),
     }
     for key, (cb_data, label) in key_map.items():
         if key in db.get("channels", {}):
@@ -504,6 +512,12 @@ async def jch_addlist(event):
 @owner_only
 async def jch_bots(event):
     await _ask_join_count_and_start(event, "bots")
+
+
+@bot.on(events.CallbackQuery(data=b"jch_other"))
+@owner_only
+async def jch_other(event):
+    await _ask_join_count_and_start(event, "other")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

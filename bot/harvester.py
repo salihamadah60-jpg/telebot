@@ -46,7 +46,7 @@ async def harvest_sources(
                 async for msg in client.iter_messages(source, limit=None):
                     if not msg.text:
                         continue
-                    links = extract_links_from_text(msg.text)
+                    links = extract_links_from_text(msg.text, msg.entities)
                     for link in links:
                         if link not in existing_set:
                             existing_set.add(link)

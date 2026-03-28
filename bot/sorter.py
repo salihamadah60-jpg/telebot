@@ -1,15 +1,16 @@
 """
-Sorter — parallel link inspection and dispatch to one of the 6 archive channels.
+Sorter — parallel link inspection and dispatch to one of the 7 archive channels.
 
 Channel routing:
   - addlist links  → "addlist"
   - bot entities   → "bots"
   - invite links   → "invite"
+  - non-medical    → "other"
   - channel type   → "channels"
   - group type     → "groups"
   - broken/private → "broken"
 
-Inside each message the detected medical specialty is also reported.
+Database-locking fix: one shared TelegramClient per batch (not one per task).
 Parallel processing: up to MAX_CONCURRENT links inspected simultaneously.
 """
 
@@ -23,6 +24,7 @@ from telethon.tl.functions.chatlists import CheckChatlistInviteRequest
 
 from classifier import (
     classify_specialty,
+    is_medical,
     detect_link_type,
     is_addlist_link,
     is_invite_link,
@@ -48,7 +50,7 @@ from config import (
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Entity inspection
+# Entity inspection  (uses a shared client — no SQLite locking)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def get_entity_info(client: TelegramClient, link: str) -> dict:
@@ -118,7 +120,7 @@ async def expand_addlist(client: TelegramClient, link: str) -> list[str]:
 # Channel routing logic
 # ─────────────────────────────────────────────────────────────────────────────
 
-def route_to_channel(link: str, info: dict, is_add: bool) -> str:
+def route_to_channel(link: str, info: dict, is_add: bool, is_med: bool = True) -> str:
     if is_add:
         return "addlist"
     if not info.get("ok"):
@@ -128,6 +130,8 @@ def route_to_channel(link: str, info: dict, is_add: bool) -> str:
         return "bots"
     if is_invite_link(link):
         return "invite"
+    if not is_med:
+        return "other"
     link_type = info.get("link_type", "")
     if link_type == "channel":
         return "channels"
@@ -145,6 +149,7 @@ _CHANNEL_LABELS = {
     "invite":   "🔐 رابط دعوة",
     "addlist":  "📂 مجلد",
     "bots":     "🤖 بوت",
+    "other":    "🌐 غير طبي",
 }
 
 _TYPE_LABELS = {
@@ -204,13 +209,13 @@ def build_report(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Single-link parallel task
+# Single-link task  — uses a SHARED client (no per-task SQLite open)
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def process_single_link(
     sem: asyncio.Semaphore,
     link: str,
-    session: str,
+    client: TelegramClient,
     account_name: str,
     db: dict,
     bot_client,
@@ -222,51 +227,60 @@ async def process_single_link(
         result = {"link": link, "status": "ok", "channel_key": None, "error": None}
 
         try:
-            async with TelegramClient(session, API_ID, API_HASH) as client:
-                _is_add = is_addlist_link(link)
-                addlist_children: list[str] = []
+            _is_add = is_addlist_link(link)
+            addlist_children: list[str] = []
 
-                if _is_add:
-                    addlist_children = await expand_addlist(client, link)
-                    if addlist_children:
-                        extra_links_collector.extend(addlist_children)
+            if _is_add:
+                addlist_children = await expand_addlist(client, link)
+                if addlist_children:
+                    extra_links_collector.extend(addlist_children)
 
-                info = await get_entity_info(client, link)
+            info = await get_entity_info(client, link)
 
-                specialty = (
-                    classify_specialty(
-                        info.get("title", ""),
-                        info.get("bio", ""),
-                        info.get("username", ""),
+            med = (
+                is_medical(
+                    info.get("title", ""),
+                    info.get("bio", ""),
+                    info.get("username", ""),
+                )
+                if info.get("ok")
+                else True
+            )
+
+            specialty = (
+                classify_specialty(
+                    info.get("title", ""),
+                    info.get("bio", ""),
+                    info.get("username", ""),
+                )
+                if info.get("ok")
+                else "—"
+            )
+
+            channel_key = route_to_channel(link, info, _is_add, med)
+            result["channel_key"] = channel_key
+
+            report = build_report(
+                link, info, specialty, channel_key,
+                account_name, addlist_children or None,
+            )
+
+            target_ch_id = db["channels"].get(channel_key)
+            if target_ch_id:
+                try:
+                    await bot_client.send_message(
+                        int(target_ch_id), report, parse_mode="md"
                     )
-                    if info.get("ok")
-                    else "—"
-                )
+                except Exception as send_err:
+                    result["error"] = f"send error: {send_err}"
 
-                channel_key = route_to_channel(link, info, _is_add)
-                result["channel_key"] = channel_key
+            mark_seen(link)
 
-                report = build_report(
-                    link, info, specialty, channel_key,
-                    account_name, addlist_children or None,
-                )
-
-                target_ch_id = db["channels"].get(channel_key)
-                if target_ch_id:
-                    try:
-                        await bot_client.send_message(
-                            int(target_ch_id), report, parse_mode="md"
-                        )
-                    except Exception as send_err:
-                        result["error"] = f"send error: {send_err}"
-
-                mark_seen(link)
-
-                if channel_key == "broken":
-                    db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
-                else:
-                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-                db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
+            if channel_key == "broken":
+                db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
+            else:
+                db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+            db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
 
         except FloodWaitError as e:
             result["status"] = "flood"
@@ -328,23 +342,30 @@ async def run_sorter(
 
         session      = accounts[acc_idx % len(accounts)]
         account_name = session
-        try:
-            async with TelegramClient(session, API_ID, API_HASH) as _c:
-                me = await _c.get_me()
-                account_name = (me.first_name or "") + (
-                    f" (@{me.username})" if me.username else ""
-                )
-        except Exception:
-            pass
 
-        tasks = [
-            process_single_link(
-                sem, link, session, account_name,
-                db, bot_client, extra_links_collector,
-            )
-            for link in batch
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # ── Open ONE shared client per batch — eliminates "database is locked" ──
+        try:
+            async with TelegramClient(session, API_ID, API_HASH) as client:
+                try:
+                    me = await client.get_me()
+                    account_name = (me.first_name or "") + (
+                        f" (@{me.username})" if me.username else ""
+                    )
+                except Exception:
+                    pass
+
+                tasks = [
+                    process_single_link(
+                        sem, link, client, account_name,
+                        db, bot_client, extra_links_collector,
+                    )
+                    for link in batch
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        except Exception as batch_err:
+            await status_callback(f"⚠️ خطأ في الدُفعة {batch_num}: {batch_err}")
+            results = []
 
         op_count += len(batch)
         errors    = sum(
