@@ -42,11 +42,12 @@ bot = TelegramClient("bot_controller", API_ID, API_HASH)
 def owner_only(func):
     async def wrapper(event):
         if event.sender_id != OWNER_ID:
+            msg = f"🚫 غير مصرح لك.\n\nهويتك: `{event.sender_id}`\nالمسموح به: `{OWNER_ID}`"
             try:
-                await event.answer("🚫 غير مصرح لك.")
+                await event.answer(msg, alert=True)
             except Exception:
                 try:
-                    await event.respond("🚫 غير مصرح لك.")
+                    await event.respond(msg, parse_mode="md")
                 except Exception:
                     pass
             return
@@ -1016,9 +1017,21 @@ async def confirm_clear_handler(event):
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+@bot.on(events.NewMessage(pattern="/whoami"))
+async def whoami_handler(event):
+    """No auth check — lets you find your real Telegram ID."""
+    await event.respond(
+        f"🪪 **معرفك في تيليجرام:**\n`{event.sender_id}`\n\n"
+        f"📌 **OWNER_ID المحمّل:** `{OWNER_ID}`\n\n"
+        + ("✅ أنت المالك." if event.sender_id == OWNER_ID else
+           "❌ لا تتطابق! غيّر OWNER_ID في الأسرار ليساوي معرّفك."),
+        parse_mode="md",
+    )
+
+
 async def main():
     await bot.start(bot_token=BOT_TOKEN)
-    print("🤖 البوت يعمل... أرسل /start في تيليجرام للبدء.")
+    print(f"🤖 البوت يعمل... OWNER_ID={OWNER_ID} | أرسل /start في تيليجرام للبدء.")
     await bot.run_until_disconnected()
 
 
