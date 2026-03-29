@@ -30,11 +30,11 @@
     "last_sorted_index": 0
   },
   "stats": {
-    "total_found": 360,
-    "total_sorted": 249,
-    "total_broken": 111,
+    "total_found": 191,
+    "total_sorted": 145,
+    "total_broken": 46,
     "total_skipped_duplicate": 0,
-    "total_invite": 199
+    "total_invite": 80
   },
   "channels_invites": [
     "https://t.me/+FybdfjJ39a00MWI8",
@@ -46,12 +46,12 @@
     "https://t.me/+tBpEunjwawhjNjE8"
   ],
   "channels_hashes": {
-    "other": -6362935876813080436,
-    "bots": -5334817834047667033,
-    "addlist": 2365729509888895644,
-    "invite": -5994932890137970263,
-    "broken": 1512384314586768789,
-    "groups": -210721234078808836,
-    "channels": 429369292596575676
+    "other": 8781587660273985160,
+    "bots": 2060456617724766608,
+    "addlist": -7427130640618464119,
+    "invite": 2030397142512442759,
+    "broken": 3536669982201276507,
+    "groups": 5396489128827796539,
+    "channels": -2176991031262195315
   }
 }
