@@ -527,6 +527,10 @@ async def _poster_worker(
                 async with file_lock:
                     seen_set.add(normalize_link(link))
                     mark_seen(link)
+                    # Per-channel counter (ch_channels, ch_groups, ch_broken, …)
+                    ck = f"ch_{channel_key}"
+                    db["stats"][ck] = db["stats"].get(ck, 0) + 1
+                    # Legacy aggregate counters (kept for backward compat)
                     if channel_key == "broken":
                         db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
                     elif channel_key == "invite":
@@ -622,6 +626,21 @@ async def _account_worker(
 # Progress reporter (runs as a background task)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _format_channel_breakdown(stats: dict, errors: int) -> str:
+    """Return a multi-line breakdown of results per archive channel."""
+    s = stats
+    return (
+        f"📢 قنوات: **{s.get('ch_channels', 0):,}**  "
+        f"👥 مجموعات: **{s.get('ch_groups', 0):,}**  "
+        f"🤖 بوتات: **{s.get('ch_bots', 0):,}**\n"
+        f"🔐 دعوات: **{s.get('ch_invite', 0):,}**  "
+        f"📂 مجلدات: **{s.get('ch_addlist', 0):,}**  "
+        f"🌐 غير طبي: **{s.get('ch_other', 0):,}**\n"
+        f"💀 تالفة: **{s.get('ch_broken', 0):,}**  "
+        f"❌ أخطاء: **{errors:,}**"
+    )
+
+
 async def _progress_reporter(
     bot_client,
     prog_msg_id: int,
@@ -634,20 +653,18 @@ async def _progress_reporter(
 ):
     while not sorter_ctrl.is_stopped() and counters.get("done", 0) < total:
         await asyncio.sleep(5)
-        done      = counters.get("done", 0)
-        errors    = counters.get("errors", 0)
+        done        = counters.get("done", 0)
+        errors      = counters.get("errors", 0)
         global_done = start_from + done
-        bar       = _build_progress_bar(global_done, raw_total)
-        paused    = sorter_ctrl.is_paused()
-        status    = "متوقف مؤقتاً ⏸" if paused else "جارٍ..."
+        bar         = _build_progress_bar(global_done, raw_total)
+        paused      = sorter_ctrl.is_paused()
+        status      = "متوقف مؤقتاً ⏸" if paused else "جارٍ..."
 
         text = (
             f"📊 **الفرز الشامل — {status}**\n"
             f"[{bar}]\n\n"
-            f"تم: **{global_done:,}** / {raw_total:,} رابط\n"
-            f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,} | "
-            f"💀 تالفة: {db['stats'].get('total_broken', 0):,} | "
-            f"❌ أخطاء: {errors:,}"
+            f"تم: **{global_done:,}** / {raw_total:,} رابط\n\n"
+            + _format_channel_breakdown(db["stats"], errors)
         )
         try:
             await bot_client.edit_message(
@@ -792,23 +809,20 @@ async def run_sorter(
 
     # ── Final progress message update ─────────────────────────────────────────
     if prog_msg_id and prog_chat_id:
-        stopped = sorter_ctrl.is_stopped()
+        stopped     = sorter_ctrl.is_stopped()
+        errors_now  = counters.get("errors", 0)
+        breakdown   = _format_channel_breakdown(db["stats"], errors_now)
         final_text = (
             (
                 f"⏹ **توقف الفرز — التقدم محفوظ**\n"
                 f"[{_build_progress_bar(start_from + counters['done'], len(raw_links))}]\n\n"
-                f"تم: **{start_from + counters['done']:,}** / {len(raw_links):,}\n"
-                f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,} | "
-                f"💀 تالفة: {db['stats'].get('total_broken', 0):,}"
+                f"تم: **{start_from + counters['done']:,}** / {len(raw_links):,} رابط\n\n"
+                + breakdown
             ) if stopped else (
                 f"🎯 **اكتمل الفرز!**\n"
                 f"[{'▓' * 10}] 100%\n\n"
-                f"تم: **{start_from + counters['done']:,}** / {len(raw_links):,} رابط\n"
-                f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,} | "
-                f"💀 تالفة: {db['stats'].get('total_broken', 0):,} | "
-                f"🔐 دعوات: {db['stats'].get('total_invite', 0):,}\n\n"
-                f"📝 الروابط \"التالفة\" = يوزرنيم محذوف فعلاً.\n"
-                f"الدعوات الخاصة → قناة 🔐 روابط الدعوة."
+                f"تم: **{start_from + counters['done']:,}** / {len(raw_links):,} رابط\n\n"
+                + breakdown
             )
         )
         try:

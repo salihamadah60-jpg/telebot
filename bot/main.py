@@ -829,16 +829,8 @@ async def resort_from_scratch_confirm_handler(event):
 async def resort_from_scratch_do_handler(event):
     await event.answer("⏳ جاري المسح وإعادة الضبط...")
 
-    # 1) Clear the seen-set file and reset stats
-    clear_seen()
-    db.setdefault("progress", {})["last_sorted_index"] = 0
-    db.setdefault("stats", {}).update({
-        "total_sorted": 0,
-        "total_broken": 0,
-        "total_invite": 0,
-        "total_found":  0,
-    })
-    save_db(db)
+    # 1) Clear the seen-set file and reset all stats (including per-channel)
+    _do_clear_memory()
 
     # 2) Delete all messages from archive channels if accounts are linked
     if db.get("accounts") and db.get("channels"):
@@ -1114,14 +1106,17 @@ async def run_sort_handler(event):
     sorter_ctrl.clear_progress_msg()
 
     if not sorter_ctrl.is_stopped():
+        s = db["stats"]
         await bot.send_message(
             OWNER_ID,
             f"🎯 **اكتمل الفرز بنجاح!**\n\n"
-            f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,}\n"
-            f"💀 تالفة/منتهية: {db['stats'].get('total_broken', 0):,}\n"
-            f"🔐 دعوات خاصة: {db['stats'].get('total_invite', 0):,}\n\n"
-            f"📝 الروابط \"التالفة\" = يوزرنيم محذوف فعلاً.\n"
-            f"الدعوات الخاصة = رابط +invite لم ينضم إليه الحساب بعد.",
+            f"📢 قنوات: **{s.get('ch_channels', 0):,}**  "
+            f"👥 مجموعات: **{s.get('ch_groups', 0):,}**  "
+            f"🤖 بوتات: **{s.get('ch_bots', 0):,}**\n"
+            f"🔐 دعوات: **{s.get('ch_invite', 0):,}**  "
+            f"📂 مجلدات: **{s.get('ch_addlist', 0):,}**  "
+            f"🌐 غير طبي: **{s.get('ch_other', 0):,}**\n"
+            f"💀 تالفة: **{s.get('ch_broken', 0):,}**",
             buttons=[
                 [Button.inline("🧠 اكتشاف ذكي ◄", b"smart_discover"),
                  Button.inline("🤝 انضمام ذكي ◄",  b"smart_join")],
@@ -1502,7 +1497,9 @@ def _do_clear_memory():
     clear_seen()
     db["stats"] = {
         "total_found": 0, "total_sorted": 0,
-        "total_broken": 0, "total_skipped_duplicate": 0,
+        "total_broken": 0, "total_skipped_duplicate": 0, "total_invite": 0,
+        "ch_channels": 0, "ch_groups": 0, "ch_broken": 0,
+        "ch_invite": 0, "ch_addlist": 0, "ch_bots": 0, "ch_other": 0,
     }
     db["progress"]["last_sorted_index"] = 0
     save_db(db)
