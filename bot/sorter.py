@@ -511,9 +511,9 @@ async def _account_worker(
                 except Exception:
                     pass
 
-            logger.info(
-                "sorter: account %s resolved %d/%d archive channels",
-                acc_name, len(channel_entities), len(db.get("channels", {}))
+            print(
+                f"sorter: account {acc_name} resolved "
+                f"{len(channel_entities)}/{len(db.get('channels', {}))} archive channels"
             )
 
             # Process in batches to periodically check stop/pause
