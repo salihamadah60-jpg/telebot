@@ -44,5 +44,14 @@
     "https://t.me/+gl2ImC1XtqBmYmE0",
     "https://t.me/+T1f7CzGMbK85NTJk",
     "https://t.me/+tBpEunjwawhjNjE8"
-  ]
+  ],
+  "channels_hashes": {
+    "other": -2671183450466144910,
+    "bots": 8659736366056439438,
+    "addlist": 5843800045201951022,
+    "invite": 5771981795006356310,
+    "broken": 4602694781142537253,
+    "groups": -8204350516261792625,
+    "channels": 4645593859743738526
+  }
 }

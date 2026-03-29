@@ -14,7 +14,8 @@ from telethon.tl.functions.channels import (
     EditAdminRequest,
     GetChannelsRequest,
 )
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+from telethon.errors import ChannelsTooMuchError
 from telethon.tl.types import ChatAdminRights, PeerChannel, InputChannel
 from config import API_ID, API_HASH, CHANNEL_KEYS, OWNER_ID
 
@@ -315,6 +316,34 @@ def _update_db_from_chat(chat, db: dict) -> bool:
     return False
 
 
+async def _fetch_hash_via_invite(client: TelegramClient, invite_hash: str, db: dict) -> bool:
+    """
+    Use CheckChatInviteRequest to get a channel's entity WITHOUT joining.
+    Works even when the account is already at its channel limit.
+    If the account is already a member, Telegram returns ChatInviteAlready
+    which contains the full channel entity (including access hash).
+    Returns True if an access hash was extracted and stored.
+    """
+    try:
+        result = await client(CheckChatInviteRequest(invite_hash))
+        # ChatInviteAlready → already a member, has full chat entity
+        chat = getattr(result, "chat", None)
+        if chat and _update_db_from_chat(chat, db):
+            return True
+        # ChatInvitePeek → also has a chat attribute
+        chats = getattr(result, "chats", [])
+        for c in chats:
+            if _update_db_from_chat(c, db):
+                return True
+    except (InviteHashExpiredError, InviteHashInvalidError):
+        pass
+    except FloodWaitError as e:
+        await asyncio.sleep(e.seconds)
+    except Exception as e:
+        log.warning("channel_setup: CheckChatInvite %s failed: %s", invite_hash, e)
+    return False
+
+
 async def join_accounts_via_invites(
     sessions: list[str],
     invite_links: list[str],
@@ -323,11 +352,12 @@ async def join_accounts_via_invites(
 ) -> dict:
     """
     Join every session to the archive channels using invite links.
-    This bypasses the entity-cache problem entirely:
-      - ImportChatInviteRequest returns the full channel entity (with access hash).
-      - We store those access hashes in db["channels_hashes"].
-      - After joining, we also try to promote each account to admin using the
-        now-cached entities.
+
+    Strategy per invite link:
+      1. Try ImportChatInviteRequest (join) — extracts full entity with access hash.
+      2. If ChannelsTooMuchError (already at limit) or UserAlreadyParticipantError:
+         fall back to CheckChatInviteRequest — reads entity WITHOUT joining,
+         still returns access hash when the account is already a member.
 
     Returns a per-session summary: {session: {"joined": N, "already": N, "errors": N}}.
     """
@@ -349,8 +379,10 @@ async def join_accounts_via_invites(
                         for chat in getattr(updates, "chats", []):
                             _update_db_from_chat(chat, db)
 
-                    except UserAlreadyParticipantError:
+                    except (UserAlreadyParticipantError, ChannelsTooMuchError):
+                        # Already a member — use Check instead of Import to get hash
                         stats["already"] += 1
+                        await _fetch_hash_via_invite(client, invite_hash, db)
 
                     except (InviteHashExpiredError, InviteHashInvalidError) as e:
                         log.warning("channel_setup: invite link %s invalid: %s", link, e)
@@ -363,15 +395,17 @@ async def join_accounts_via_invites(
                         log.warning("channel_setup: join via invite %s failed: %s", link, e)
                         stats["errors"] += 1
 
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(2)
 
-                # After joining, warm up cache and collect any remaining access hashes
+                # Also page through ALL dialogs to pick up any remaining hashes
                 try:
-                    dialogs = await client.get_dialogs(limit=300)
-                    for dlg in dialogs:
+                    async for dlg in client.iter_dialogs():
                         entity = getattr(dlg, "entity", None)
                         if entity:
                             _update_db_from_chat(entity, db)
+                        # Stop once we've found hashes for all known channels
+                        if len(db.get("channels_hashes", {})) >= len(db.get("channels", {})):
+                            break
                 except Exception:
                     pass
 

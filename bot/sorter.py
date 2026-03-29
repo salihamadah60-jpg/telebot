@@ -24,10 +24,11 @@ Persistent progress bar:
 
 import asyncio
 import random
+import re
 from telethon import TelegramClient, Button
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, InviteHashExpiredError, InviteHashInvalidError
 from telethon.tl.functions.channels import GetFullChannelRequest, GetChannelsRequest
-from telethon.tl.functions.messages import GetFullChatRequest
+from telethon.tl.functions.messages import GetFullChatRequest, CheckChatInviteRequest
 from telethon.tl.functions.chatlists import CheckChatlistInviteRequest
 from telethon.tl.types import PeerChannel, InputChannel
 
@@ -259,23 +260,33 @@ async def _resolve_archive_channels(client: TelegramClient, db: dict) -> dict:
     """
     Pre-resolve all archive channel entities for this client session.
     Returns {channel_key: entity} for every channel we can reach.
-    Warms up the entity cache via get_dialogs first.
-    """
-    try:
-        await client.get_dialogs(limit=200)
-    except Exception:
-        pass
 
-    channels = db.get("channels", {})
-    hashes   = db.get("channels_hashes", {})
-    resolved = {}
+    Resolution strategy (in order, stops at first success per channel):
+      1. InputChannel(ch_id, stored_access_hash)  — no cache needed, fastest
+      2. GetChannelsRequest([PeerChannel])          — works if dialogs populated
+      3. CheckChatInviteRequest                    — works even at channel limit;
+                                                     for already-joined channels
+                                                     returns full entity with hash
+      4. get_entity from local session cache        — last resort
+    """
+    channels     = db.get("channels", {})
+    hashes       = db.get("channels_hashes", {})
+    invite_links = db.get("channels_invites", [])
+    resolved     = {}
+
+    # Build invite_hash list once
+    invite_hashes = []
+    for link in invite_links:
+        m = re.search(r't\.me/(?:\+|joinchat/)([A-Za-z0-9_\-]+)', link)
+        if m:
+            invite_hashes.append(m.group(1))
 
     for key, ch_id in channels.items():
         if not isinstance(ch_id, int):
             continue
         entity = None
 
-        # 1) Try InputChannel with stored access hash (no cache needed)
+        # 1) Use stored access hash — requires no session cache at all
         if key in hashes:
             try:
                 result = await client(GetChannelsRequest(
@@ -283,19 +294,50 @@ async def _resolve_archive_channels(client: TelegramClient, db: dict) -> dict:
                 ))
                 if result.chats:
                     entity = result.chats[0]
+                    # Refresh stored hash in case it changed
+                    if hasattr(entity, "access_hash"):
+                        hashes[key] = entity.access_hash
             except Exception:
                 pass
 
-        # 2) Try GetChannelsRequest with PeerChannel
+        # 2) PeerChannel via GetChannelsRequest (cache-independent API call)
         if entity is None:
             try:
                 result = await client(GetChannelsRequest([PeerChannel(ch_id)]))
                 if result.chats:
                     entity = result.chats[0]
+                    if hasattr(entity, "access_hash"):
+                        hashes[key] = entity.access_hash
+                        if "channels_hashes" not in db:
+                            db["channels_hashes"] = {}
+                        db["channels_hashes"][key] = entity.access_hash
             except Exception:
                 pass
 
-        # 3) Fall back to get_entity from local cache
+        # 3) CheckChatInviteRequest — works even when at channel join limit
+        if entity is None and invite_hashes:
+            for inv_hash in invite_hashes:
+                try:
+                    result = await client(CheckChatInviteRequest(inv_hash))
+                    chat = getattr(result, "chat", None)
+                    chats = getattr(result, "chats", [])
+                    all_chats = ([chat] if chat else []) + list(chats)
+                    for c in all_chats:
+                        if getattr(c, "id", None) == ch_id:
+                            entity = c
+                            if hasattr(c, "access_hash"):
+                                if "channels_hashes" not in db:
+                                    db["channels_hashes"] = {}
+                                db["channels_hashes"][key] = c.access_hash
+                            break
+                    if entity is not None:
+                        break
+                except (InviteHashExpiredError, InviteHashInvalidError):
+                    continue
+                except Exception:
+                    continue
+
+        # 4) Local session cache fallback
         if entity is None:
             try:
                 entity = await client.get_entity(PeerChannel(ch_id))
