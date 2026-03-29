@@ -10,9 +10,16 @@ Channel routing:
   - group type     → "groups"
   - truly broken   → "broken"  (deleted/invalid usernames only)
 
+Multi-account parallel mode:
+  - Pending links are split evenly across all linked accounts.
+  - Each account worker runs concurrently via asyncio.gather.
+  - Seen-link set is loaded into memory once (O(1) lookups).
+  - A shared asyncio.Lock protects file writes and stats updates.
+  - Resume: reads last_sorted_index from db and skips already-seen links.
+
 Persistent progress bar:
-  - One message is sent at the start and EDITED on every batch update
-  - Stop and Pause/Resume buttons are embedded in that message
+  - One message is sent at the start and EDITED on every batch update.
+  - Stop and Pause/Resume buttons are embedded in that message.
 """
 
 import asyncio
@@ -32,18 +39,18 @@ from classifier import (
     is_bot_entity,
 )
 from database import (
-    is_seen,
+    load_seen_set,
     mark_seen,
     load_raw_links,
     save_raw_links,
     save_db,
+    normalize_link,
 )
 from config import (
     API_ID,
     API_HASH,
     DELAY_MIN,
     DELAY_MAX,
-    SWITCH_ACCOUNT_EVERY,
     MAX_CONCURRENT,
     OWNER_ID,
 )
@@ -51,7 +58,7 @@ import state as sorter_ctrl
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Entity inspection  (uses a shared client — no SQLite locking)
+# Entity inspection
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def get_entity_info(client: TelegramClient, link: str) -> dict:
@@ -125,13 +132,9 @@ def route_to_channel(link: str, info: dict, is_add: bool, is_med: bool = True) -
     if is_add:
         return "addlist"
 
-    # ── Invite links (t.me/+ or t.me/joinchat/...) always go to "invite" ──
-    # Even if get_entity failed (because the account hasn't joined yet),
-    # these are VALID invite links — not broken links.
     if is_invite_link(link):
         return "invite"
 
-    # ── If entity lookup failed and it's NOT an invite link → truly broken ──
     if not info.get("ok"):
         return "broken"
 
@@ -219,37 +222,16 @@ def build_report(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Progress bar builder
+# Progress bar
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_progress_bar(done: int, total: int, width: int = 10) -> str:
     if total == 0:
         return "░" * width + " 0%"
-    pct     = done / total
-    filled  = round(pct * width)
-    bar     = "▓" * filled + "░" * (width - filled)
+    pct    = done / total
+    filled = round(pct * width)
+    bar    = "▓" * filled + "░" * (width - filled)
     return f"{bar} {int(pct * 100)}%"
-
-
-def _build_progress_text(
-    batch_num: int,
-    total_batches: int,
-    done: int,
-    total: int,
-    sorted_ok: int,
-    broken: int,
-    batch_errors: int,
-    account_name: str,
-    status: str = "جارٍ...",
-) -> str:
-    bar = _build_progress_bar(done, total)
-    return (
-        f"📊 **الفرز الشامل — {status}**\n"
-        f"[{bar}]\n\n"
-        f"تم: **{done:,}** / {total:,} رابط\n"
-        f"✅ مرتبة: {sorted_ok:,} | 💀 تالفة/منتهية: {broken:,} | ❌ أخطاء: {batch_errors:,}\n"
-        f"الدفعة: {batch_num}/{total_batches} | 👤 `{account_name}`"
-    )
 
 
 def _progress_buttons(paused: bool = False) -> list:
@@ -265,22 +247,24 @@ def _progress_buttons(paused: bool = False) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Single-link task  — uses a SHARED client (no per-task SQLite open)
+# Single-link processor (shared client per worker)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def process_single_link(
+async def _process_one(
     sem: asyncio.Semaphore,
     link: str,
     client: TelegramClient,
     account_name: str,
     db: dict,
     bot_client,
-    extra_links_collector: list,
-) -> dict:
+    file_lock: asyncio.Lock,
+    seen_set: set,
+    extra_links: list,
+    counters: dict,
+) -> None:
+    """Process a single link: inspect → route → post to archive channel → mark seen."""
     async with sem:
         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-
-        result = {"link": link, "status": "ok", "channel_key": None, "error": None}
 
         try:
             _is_add = is_addlist_link(link)
@@ -289,7 +273,8 @@ async def process_single_link(
             if _is_add:
                 addlist_children = await expand_addlist(client, link)
                 if addlist_children:
-                    extra_links_collector.extend(addlist_children)
+                    async with file_lock:
+                        extra_links.extend(addlist_children)
 
             info = await get_entity_info(client, link)
 
@@ -299,8 +284,7 @@ async def process_single_link(
                     info.get("bio", ""),
                     info.get("username", ""),
                 )
-                if info.get("ok")
-                else True
+                if info.get("ok") else True
             )
 
             specialty = (
@@ -309,48 +293,160 @@ async def process_single_link(
                     info.get("bio", ""),
                     info.get("username", ""),
                 )
-                if info.get("ok")
-                else "—"
+                if info.get("ok") else "—"
             )
 
             channel_key = route_to_channel(link, info, _is_add, med)
-            result["channel_key"] = channel_key
 
             report = build_report(
                 link, info, specialty, channel_key,
                 account_name, addlist_children or None,
             )
 
+            # ── Post to the correct archive channel ───────────────────────────
             target_ch_id = db["channels"].get(channel_key)
-            if target_ch_id:
+            if target_ch_id and isinstance(target_ch_id, int):
                 try:
                     await bot_client.send_message(
-                        int(target_ch_id), report, parse_mode="md"
+                        target_ch_id, report, parse_mode="md"
                     )
-                except Exception as send_err:
-                    result["error"] = f"send error: {send_err}"
+                except Exception:
+                    pass
 
-            mark_seen(link)
+            # ── Mark seen + update stats (file_lock protects file writes) ─────
+            async with file_lock:
+                seen_set.add(normalize_link(link))
+                mark_seen(link)
 
-            if channel_key == "broken":
-                db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
-            elif channel_key == "invite":
-                db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
-                db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-            else:
-                db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-            db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
+                if channel_key == "broken":
+                    db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
+                elif channel_key == "invite":
+                    db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
+                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                else:
+                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
+
+                counters["done"] += 1
 
         except FloodWaitError as e:
-            result["status"] = "flood"
-            result["error"]  = f"FloodWait {e.seconds}s"
             await asyncio.sleep(e.seconds)
-        except Exception as e:
-            result["status"] = "error"
-            result["error"]  = str(e)
-            mark_seen(link)
+            async with file_lock:
+                counters["errors"] += 1
+        except Exception:
+            async with file_lock:
+                mark_seen(link)
+                seen_set.add(normalize_link(link))
+                counters["done"] += 1
+                counters["errors"] += 1
 
-        return result
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-account worker
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _account_worker(
+    session: str,
+    links_subset: list,
+    db: dict,
+    bot_client,
+    file_lock: asyncio.Lock,
+    seen_set: set,
+    extra_links: list,
+    counters: dict,
+    acc_index: int,
+    total_accs: int,
+) -> None:
+    if not links_subset:
+        return
+
+    sem = asyncio.Semaphore(MAX_CONCURRENT)
+
+    try:
+        async with TelegramClient(session, API_ID, API_HASH, flood_sleep_threshold=30) as client:
+            try:
+                me = await client.get_me()
+                acc_name = (me.first_name or "") + (f" (@{me.username})" if me.username else "")
+            except Exception:
+                acc_name = f"حساب {acc_index}"
+
+            # Process in batches to periodically check stop/pause
+            batch_size = MAX_CONCURRENT * 4
+            batches = [links_subset[i: i + batch_size] for i in range(0, len(links_subset), batch_size)]
+
+            for batch in batches:
+                # Check stop
+                if sorter_ctrl.is_stopped():
+                    break
+
+                # Wait out pause
+                while sorter_ctrl.is_paused():
+                    await asyncio.sleep(2)
+                    if sorter_ctrl.is_stopped():
+                        return
+
+                tasks = [
+                    _process_one(
+                        sem, link, client, acc_name,
+                        db, bot_client, file_lock, seen_set,
+                        extra_links, counters,
+                    )
+                    for link in batch
+                    if normalize_link(link) not in seen_set  # double-check before launching
+                ]
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Save progress after each batch
+                async with file_lock:
+                    db["progress"]["last_sorted_index"] = counters.get("global_done", 0)
+                    save_db(db)
+
+    except Exception as e:
+        async with file_lock:
+            counters["errors"] = counters.get("errors", 0) + 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Progress reporter (runs as a background task)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _progress_reporter(
+    bot_client,
+    prog_msg_id: int,
+    prog_chat_id: int,
+    counters: dict,
+    total: int,
+    raw_total: int,
+    start_from: int,
+    db: dict,
+):
+    while not sorter_ctrl.is_stopped() and counters.get("done", 0) < total:
+        await asyncio.sleep(5)
+        done      = counters.get("done", 0)
+        errors    = counters.get("errors", 0)
+        global_done = start_from + done
+        bar       = _build_progress_bar(global_done, raw_total)
+        paused    = sorter_ctrl.is_paused()
+        status    = "متوقف مؤقتاً ⏸" if paused else "جارٍ..."
+
+        text = (
+            f"📊 **الفرز الشامل — {status}**\n"
+            f"[{bar}]\n\n"
+            f"تم: **{global_done:,}** / {raw_total:,} رابط\n"
+            f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,} | "
+            f"💀 تالفة: {db['stats'].get('total_broken', 0):,} | "
+            f"❌ أخطاء: {errors:,}"
+        )
+        try:
+            await bot_client.edit_message(
+                prog_chat_id, prog_msg_id,
+                text,
+                buttons=_progress_buttons(paused),
+                parse_mode="md",
+            )
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -369,129 +465,118 @@ async def run_sorter(
         await status_callback("⚠️ لا توجد روابط في القائمة الخام. قم بتشغيل الحصاد أولاً.")
         return
 
-    pending = [lnk for lnk in raw_links[start_from:] if not is_seen(lnk)]
-    total   = len(pending)
+    # ── Load seen set into memory (O(1) lookups instead of O(n) file reads) ───
+    seen_set = load_seen_set()
+
+    # ── Build pending list: from start_from onward, skip already-seen ─────────
+    pending = [
+        lnk for lnk in raw_links[start_from:]
+        if normalize_link(lnk) not in seen_set
+    ]
+    total = len(pending)
 
     if total == 0:
-        await status_callback("✅ جميع الروابط تمت معالجتها مسبقاً.")
+        await status_callback(
+            "✅ **جميع الروابط تمت معالجتها مسبقاً.**\n\n"
+            "إذا أردت إعادة الفرز، امسح الذاكرة أولاً."
+        )
         return
 
-    sem        = asyncio.Semaphore(MAX_CONCURRENT)
-    acc_idx    = 0
-    op_count   = 0
-    batch_size = MAX_CONCURRENT * 4
-    extra_links_collector: list[str] = []
-    batches    = [pending[i: i + batch_size] for i in range(0, len(pending), batch_size)]
-    total_batches = len(batches)
+    num_accounts = len(accounts)
+    await status_callback(
+        f"⚡ **الفرز الموزع — بدء**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 حسابات: **{num_accounts}** | 🔗 روابط: **{total:,}**\n"
+        f"{'🔄 استئناف من حيث توقفنا' if start_from > 0 else '⚡ بدء جديد'}\n"
+        + "\n".join(
+            f"  · حساب {i+1}: **{len(pending[i::num_accounts]):,}** رابط"
+            for i in range(num_accounts)
+        )
+    )
 
-    # ── Progress message — edited in place every batch ────────────────────────
+    # ── Split links across accounts (round-robin) ─────────────────────────────
+    subsets = [pending[i::num_accounts] for i in range(num_accounts)]
+
+    file_lock   = asyncio.Lock()
+    extra_links: list[str] = []
+    counters    = {"done": 0, "errors": 0}
+
+    # ── Progress reporter background task ─────────────────────────────────────
     prog_msg_id  = sorter_ctrl.progress_msg_id
     prog_chat_id = sorter_ctrl.progress_chat_id
 
-    async def _edit_progress(batch_num: int, account_name: str, batch_errors: int, status: str = "جارٍ..."):
-        if not prog_msg_id or not prog_chat_id:
-            return
-        text = _build_progress_text(
-            batch_num=batch_num,
-            total_batches=total_batches,
-            done=start_from + op_count,
-            total=len(raw_links),
-            sorted_ok=db["stats"].get("total_sorted", 0),
-            broken=db["stats"].get("total_broken", 0),
-            batch_errors=batch_errors,
-            account_name=account_name,
-            status=status,
+    reporter = asyncio.create_task(
+        _progress_reporter(
+            bot_client, prog_msg_id, prog_chat_id,
+            counters, total, len(raw_links), start_from, db,
         )
-        paused = sorter_ctrl.is_paused()
-        try:
-            await bot_client.edit_message(
-                prog_chat_id, prog_msg_id,
-                text,
-                buttons=_progress_buttons(paused),
-                parse_mode="md",
+    ) if prog_msg_id and prog_chat_id else None
+
+    # ── Run all account workers simultaneously ────────────────────────────────
+    try:
+        workers = [
+            _account_worker(
+                session=accounts[i],
+                links_subset=subsets[i],
+                db=db,
+                bot_client=bot_client,
+                file_lock=file_lock,
+                seen_set=seen_set,
+                extra_links=extra_links,
+                counters=counters,
+                acc_index=i + 1,
+                total_accs=num_accounts,
             )
-        except Exception:
-            pass
+            for i in range(num_accounts)
+            if subsets[i]
+        ]
+        await asyncio.gather(*workers)
+    finally:
+        if reporter:
+            reporter.cancel()
+            try:
+                await reporter
+            except asyncio.CancelledError:
+                pass
 
-    for batch_num, batch in enumerate(batches, 1):
-        # ── Check stop ────────────────────────────────────────────────────────
-        if sorter_ctrl.is_stopped():
-            await _edit_progress(batch_num, accounts[acc_idx % len(accounts)], 0, "متوقف ⏹")
-            await status_callback("⏹ **توقف الفرز** — التقدم محفوظ.")
-            return
-
-        # ── Check pause — wait until resumed or stopped ───────────────────────
-        if sorter_ctrl.is_paused():
-            await _edit_progress(batch_num, accounts[acc_idx % len(accounts)], 0, "متوقف مؤقتاً ⏸")
-            while sorter_ctrl.is_paused():
-                await asyncio.sleep(2)
-            if sorter_ctrl.is_stopped():
-                await _edit_progress(batch_num, accounts[acc_idx % len(accounts)], 0, "متوقف ⏹")
-                await status_callback("⏹ **توقف الفرز** — التقدم محفوظ.")
-                return
-
-        if op_count > 0 and op_count % SWITCH_ACCOUNT_EVERY < batch_size and len(accounts) > 1:
-            acc_idx = (acc_idx + 1) % len(accounts)
-
-        session      = accounts[acc_idx % len(accounts)]
-        account_name = session
-
-        try:
-            async with TelegramClient(session, API_ID, API_HASH, flood_sleep_threshold=30) as client:
-                try:
-                    me = await client.get_me()
-                    account_name = (me.first_name or "") + (
-                        f" (@{me.username})" if me.username else ""
-                    )
-                except Exception:
-                    pass
-
-                tasks = [
-                    process_single_link(
-                        sem, link, client, account_name,
-                        db, bot_client, extra_links_collector,
-                    )
-                    for link in batch
-                ]
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        except Exception as batch_err:
-            await status_callback(f"⚠️ خطأ في الدُفعة {batch_num}: {batch_err}")
-            results = []
-
-        op_count += len(batch)
-        errors    = sum(
-            1 for r in results
-            if isinstance(r, Exception)
-            or (isinstance(r, dict) and r.get("status") != "ok")
-        )
-
-        db["progress"]["last_sorted_index"] = start_from + op_count
+    # ── Save final progress index ─────────────────────────────────────────────
+    async with file_lock:
+        db["progress"]["last_sorted_index"] = start_from + counters["done"]
         save_db(db)
 
-        # Edit the persistent progress message
-        await _edit_progress(batch_num, account_name, errors)
-
     # ── Handle extra addlist-derived links ────────────────────────────────────
-    if extra_links_collector:
-        all_links    = load_raw_links() + extra_links_collector
-        unique_extra = list(dict.fromkeys(extra_links_collector))
-        save_raw_links(all_links)
-        await status_callback(
-            f"📂 تم استخراج **{len(unique_extra)}** رابط إضافي من المجلدات."
-        )
+    if extra_links:
+        unique_extra = list(dict.fromkeys(
+            lnk for lnk in extra_links
+            if normalize_link(lnk) not in seen_set
+        ))
+        if unique_extra:
+            all_links = load_raw_links() + unique_extra
+            save_raw_links(all_links)
+            await status_callback(
+                f"📂 تم استخراج **{len(unique_extra)}** رابط إضافي من المجلدات — أُضيفت للقائمة."
+            )
 
-    # ── Final update on the progress message ─────────────────────────────────
+    # ── Final progress message update ─────────────────────────────────────────
     if prog_msg_id and prog_chat_id:
+        stopped = sorter_ctrl.is_stopped()
         final_text = (
-            f"🎯 **اكتمل الفرز!**\n"
-            f"[{'▓' * 10}] 100%\n\n"
-            f"تم: **{start_from + op_count:,}** / {len(raw_links):,} رابط\n"
-            f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,} | "
-            f"💀 تالفة: {db['stats'].get('total_broken', 0):,} | "
-            f"🔐 دعوات: {db['stats'].get('total_invite', 0):,}\n\n"
-            f"📝 **ملاحظة:** الروابط \"التالفة\" هي روابط يوزرنيم منتهية أو محذوفة فعلاً.\n"
-            f"الروابط الخاصة/الدعوات تجدها في قناة 🔐 روابط الدعوة."
+            (
+                f"⏹ **توقف الفرز — التقدم محفوظ**\n"
+                f"[{_build_progress_bar(start_from + counters['done'], len(raw_links))}]\n\n"
+                f"تم: **{start_from + counters['done']:,}** / {len(raw_links):,}\n"
+                f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,} | "
+                f"💀 تالفة: {db['stats'].get('total_broken', 0):,}"
+            ) if stopped else (
+                f"🎯 **اكتمل الفرز!**\n"
+                f"[{'▓' * 10}] 100%\n\n"
+                f"تم: **{start_from + counters['done']:,}** / {len(raw_links):,} رابط\n"
+                f"✅ مرتبة: {db['stats'].get('total_sorted', 0):,} | "
+                f"💀 تالفة: {db['stats'].get('total_broken', 0):,} | "
+                f"🔐 دعوات: {db['stats'].get('total_invite', 0):,}\n\n"
+                f"📝 الروابط \"التالفة\" = يوزرنيم محذوف فعلاً.\n"
+                f"الدعوات الخاصة → قناة 🔐 روابط الدعوة."
+            )
         )
         try:
             await bot_client.edit_message(

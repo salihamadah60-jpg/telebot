@@ -33,6 +33,14 @@ def save_db(data: dict) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def load_seen_set() -> set:
+    """Load all seen links into memory as a set for O(1) lookups."""
+    if not os.path.exists(SEEN_LINKS_FILE):
+        return set()
+    with open(SEEN_LINKS_FILE, "r", encoding="utf-8") as f:
+        return {line.strip() for line in f if line.strip()}
+
+
 def is_seen(link: str) -> bool:
     clean = normalize_link(link)
     if not os.path.exists(SEEN_LINKS_FILE):
