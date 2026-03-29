@@ -805,16 +805,18 @@ async def resort_from_scratch_confirm_handler(event):
     await event.answer()
     raw_count  = get_raw_count()
     seen_count = get_seen_count()
+    has_channels = bool(db.get("channels"))
     await event.respond(
         "⚠️ **إعادة الفرز من البداية**\n\n"
         "سيتم:\n"
         f"• مسح سجل الروابط المرئية ({seen_count:,} رابط)\n"
         f"• إعادة ضبط مؤشر التقدم (من 0 / {raw_count:,})\n"
+        "• **حذف جميع الرسائل من قنوات الأرشيف**\n"
         "• إعادة فرز جميع الروابط وإرسالها للقنوات\n\n"
         "⚠️ هذا يفيد إذا كان الفرز السابق لم يُرسل الروابط للقنوات بسبب مشكلة في الوصول.\n\n"
         "هل أنت متأكد؟",
         buttons=[
-            [Button.inline("✅ نعم، أعد الفرز من البداية", b"resort_from_scratch_do")],
+            [Button.inline("✅ موافق", b"resort_from_scratch_do")],
             [Button.inline("❌ إلغاء", b"make_ch")],
             nav_row(),
         ],
@@ -827,10 +829,8 @@ async def resort_from_scratch_confirm_handler(event):
 async def resort_from_scratch_do_handler(event):
     await event.answer("⏳ جاري المسح وإعادة الضبط...")
 
-    # 1) Clear the seen-set file
+    # 1) Clear the seen-set file and reset stats
     clear_seen()
-
-    # 2) Reset progress index and stats
     db.setdefault("progress", {})["last_sorted_index"] = 0
     db.setdefault("stats", {}).update({
         "total_sorted": 0,
@@ -840,11 +840,34 @@ async def resort_from_scratch_do_handler(event):
     })
     save_db(db)
 
+    # 2) Delete all messages from archive channels if accounts are linked
+    if db.get("accounts") and db.get("channels"):
+        prog_msg = await event.respond(
+            "🗑 **جاري حذف الرسائل من قنوات الأرشيف...**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n"
+            "⏳ جاري التحضير...",
+            parse_mode="md",
+        )
+        edit_cb = make_edit_callback(prog_msg.id, OWNER_ID)
+        results = await clear_archive_channels(db["accounts"], db, status_callback=edit_cb)
+        total_deleted = sum(results.values())
+        try:
+            await bot.edit_message(
+                OWNER_ID, prog_msg.id,
+                f"✅ **تم حذف رسائل الأرشيف** — {total_deleted:,} رسالة محذوفة.",
+                parse_mode="md",
+            )
+        except Exception:
+            pass
+    else:
+        total_deleted = 0
+
     raw_count = get_raw_count()
     await event.respond(
-        f"✅ **تم إعادة الضبط.**\n\n"
+        f"✅ **تم إعادة الضبط الكامل.**\n\n"
         f"• سجل الروابط المرئية: ممسوح\n"
-        f"• مؤشر التقدم: 0 / {raw_count:,}\n\n"
+        f"• مؤشر التقدم: 0 / {raw_count:,}\n"
+        f"• رسائل الأرشيف المحذوفة: {total_deleted:,}\n\n"
         f"اضغط **⚡ فرز** لبدء الفرز من جديد وإرسال الروابط للقنوات.",
         buttons=[
             [Button.inline("⚡ بدء الفرز الآن ◄", b"run_sort")],
