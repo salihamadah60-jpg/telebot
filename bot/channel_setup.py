@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError, UserAlreadyParticipantError
 from telethon.tl.functions.channels import (
@@ -6,8 +7,10 @@ from telethon.tl.functions.channels import (
     InviteToChannelRequest,
     EditAdminRequest,
 )
-from telethon.tl.types import ChatAdminRights
+from telethon.tl.types import ChatAdminRights, PeerChannel
 from config import API_ID, API_HASH, CHANNEL_KEYS, OWNER_ID
+
+log = logging.getLogger(__name__)
 
 
 async def create_archive_channels(session: str, db: dict, save_db_fn) -> dict:
@@ -99,26 +102,37 @@ async def _add_sessions_to_channels(
             if not isinstance(ch_id, int):
                 continue
             try:
+                # Resolve channel entity explicitly (avoids raw-int resolution failures)
+                channel_entity = await admin_client.get_entity(PeerChannel(ch_id))
+            except Exception as e:
+                log.warning("channel_setup: cannot resolve channel %s (%s): %s", key, ch_id, e)
+                continue
+            try:
                 # Invite
                 await admin_client(InviteToChannelRequest(
-                    channel=ch_id,
+                    channel=channel_entity,
                     users=[me],
-                ))
-                await asyncio.sleep(1)
-                # Promote to admin
-                await admin_client(EditAdminRequest(
-                    channel=ch_id,
-                    user_id=me,
-                    admin_rights=admin_rights,
-                    rank="مساعد",
                 ))
                 await asyncio.sleep(1)
             except UserAlreadyParticipantError:
                 pass
             except FloodWaitError as e:
                 await asyncio.sleep(e.seconds)
-            except Exception:
-                pass
+            except Exception as e:
+                log.warning("channel_setup: invite %s to %s failed: %s", me.id, key, e)
+            try:
+                # Promote to admin
+                await admin_client(EditAdminRequest(
+                    channel=channel_entity,
+                    user_id=me,
+                    admin_rights=admin_rights,
+                    rank="مساعد",
+                ))
+                await asyncio.sleep(1)
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds)
+            except Exception as e:
+                log.warning("channel_setup: promote %s in %s failed: %s", me.id, key, e)
 
 
 async def add_owner_to_channels(db: dict):
@@ -158,30 +172,31 @@ async def _add_owner_to_channels(
         if not isinstance(ch_id, int):
             continue
         try:
+            channel_entity = await admin_client.get_entity(PeerChannel(ch_id))
+        except Exception as e:
+            log.warning("channel_setup: cannot resolve channel %s (%s) for owner: %s", key, ch_id, e)
+            continue
+        try:
             await admin_client(InviteToChannelRequest(
-                channel=ch_id,
+                channel=channel_entity,
                 users=[owner_entity],
             ))
             await asyncio.sleep(1)
+        except UserAlreadyParticipantError:
+            pass
+        except FloodWaitError as e:
+            await asyncio.sleep(e.seconds)
+        except Exception as e:
+            log.warning("channel_setup: invite owner to %s failed: %s", key, e)
+        try:
             await admin_client(EditAdminRequest(
-                channel=ch_id,
+                channel=channel_entity,
                 user_id=owner_entity,
                 admin_rights=admin_rights,
                 rank="مالك",
             ))
             await asyncio.sleep(1)
-        except UserAlreadyParticipantError:
-            # Already in channel — just make sure they're admin
-            try:
-                await admin_client(EditAdminRequest(
-                    channel=ch_id,
-                    user_id=owner_entity,
-                    admin_rights=admin_rights,
-                    rank="مالك",
-                ))
-            except Exception:
-                pass
         except FloodWaitError as e:
             await asyncio.sleep(e.seconds)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("channel_setup: promote owner in %s failed: %s", key, e)

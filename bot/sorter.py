@@ -73,19 +73,23 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
             "entity": None,
         }
 
+    from telethon.tl.types import User as TLUser, Chat as TLChat
+    is_user = isinstance(entity, TLUser)
+
     title    = getattr(entity, "title", "") or getattr(entity, "first_name", "بدون اسم")
     username = getattr(entity, "username", "") or ""
     bio      = ""
 
-    try:
-        if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
-            full = await client(GetFullChannelRequest(entity))
-            bio  = getattr(full.full_chat, "about", "") or ""
-        elif not getattr(entity, "bot", False):
-            full = await client(GetFullChatRequest(entity))
-            bio  = getattr(full.full_chat, "about", "") or ""
-    except Exception:
-        pass
+    if not is_user:
+        try:
+            if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+                full = await client(GetFullChannelRequest(entity))
+                bio  = getattr(full.full_chat, "about", "") or ""
+            elif isinstance(entity, TLChat):
+                full = await client(GetFullChatRequest(entity))
+                bio  = getattr(full.full_chat, "about", "") or ""
+        except Exception:
+            pass
 
     link_type = detect_link_type(entity)
     members   = getattr(entity, "participants_count", None)
@@ -256,7 +260,6 @@ async def _process_one(
     client: TelegramClient,
     account_name: str,
     db: dict,
-    bot_client,
     file_lock: asyncio.Lock,
     seen_set: set,
     extra_links: list,
@@ -303,11 +306,11 @@ async def _process_one(
                 account_name, addlist_children or None,
             )
 
-            # ── Post to the correct archive channel ───────────────────────────
+            # ── Post to the correct archive channel (using user account) ─────────
             target_ch_id = db["channels"].get(channel_key)
             if target_ch_id and isinstance(target_ch_id, int):
                 try:
-                    await bot_client.send_message(
+                    await client.send_message(
                         target_ch_id, report, parse_mode="md"
                     )
                 except Exception:
@@ -349,7 +352,6 @@ async def _account_worker(
     session: str,
     links_subset: list,
     db: dict,
-    bot_client,
     file_lock: asyncio.Lock,
     seen_set: set,
     extra_links: list,
@@ -388,7 +390,7 @@ async def _account_worker(
                 tasks = [
                     _process_one(
                         sem, link, client, acc_name,
-                        db, bot_client, file_lock, seen_set,
+                        db, file_lock, seen_set,
                         extra_links, counters,
                     )
                     for link in batch
@@ -519,7 +521,6 @@ async def run_sorter(
                 session=accounts[i],
                 links_subset=subsets[i],
                 db=db,
-                bot_client=bot_client,
                 file_lock=file_lock,
                 seen_set=seen_set,
                 extra_links=extra_links,
