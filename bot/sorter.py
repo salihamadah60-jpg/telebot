@@ -26,9 +26,10 @@ import asyncio
 import random
 from telethon import TelegramClient, Button
 from telethon.errors import FloodWaitError
-from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.channels import GetFullChannelRequest, GetChannelsRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.functions.chatlists import CheckChatlistInviteRequest
+from telethon.tl.types import PeerChannel, InputChannel
 
 from classifier import (
     classify_specialty,
@@ -251,6 +252,63 @@ def _progress_buttons(paused: bool = False) -> list:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Resolve archive channel entities reliably (avoids entity-cache misses)
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _resolve_archive_channels(client: TelegramClient, db: dict) -> dict:
+    """
+    Pre-resolve all archive channel entities for this client session.
+    Returns {channel_key: entity} for every channel we can reach.
+    Warms up the entity cache via get_dialogs first.
+    """
+    try:
+        await client.get_dialogs(limit=200)
+    except Exception:
+        pass
+
+    channels = db.get("channels", {})
+    hashes   = db.get("channels_hashes", {})
+    resolved = {}
+
+    for key, ch_id in channels.items():
+        if not isinstance(ch_id, int):
+            continue
+        entity = None
+
+        # 1) Try InputChannel with stored access hash (no cache needed)
+        if key in hashes:
+            try:
+                result = await client(GetChannelsRequest(
+                    [InputChannel(ch_id, hashes[key])]
+                ))
+                if result.chats:
+                    entity = result.chats[0]
+            except Exception:
+                pass
+
+        # 2) Try GetChannelsRequest with PeerChannel
+        if entity is None:
+            try:
+                result = await client(GetChannelsRequest([PeerChannel(ch_id)]))
+                if result.chats:
+                    entity = result.chats[0]
+            except Exception:
+                pass
+
+        # 3) Fall back to get_entity from local cache
+        if entity is None:
+            try:
+                entity = await client.get_entity(PeerChannel(ch_id))
+            except Exception:
+                pass
+
+        if entity is not None:
+            resolved[key] = entity
+
+    return resolved
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Single-link processor (shared client per worker)
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -264,6 +322,7 @@ async def _process_one(
     seen_set: set,
     extra_links: list,
     counters: dict,
+    channel_entities: dict,
 ) -> None:
     """Process a single link: inspect → route → post to archive channel → mark seen."""
     async with sem:
@@ -306,15 +365,19 @@ async def _process_one(
                 account_name, addlist_children or None,
             )
 
-            # ── Post to the correct archive channel (using user account) ─────────
-            target_ch_id = db["channels"].get(channel_key)
-            if target_ch_id and isinstance(target_ch_id, int):
+            # ── Post to the correct archive channel (using pre-resolved entity) ──
+            target_entity = channel_entities.get(channel_key)
+            if target_entity is not None:
                 try:
-                    await client.send_message(
-                        target_ch_id, report, parse_mode="md"
-                    )
+                    await client.send_message(target_entity, report, parse_mode="md")
                 except Exception:
-                    pass
+                    # Fallback to raw ID if entity became stale
+                    raw_id = db["channels"].get(channel_key)
+                    if raw_id and isinstance(raw_id, int):
+                        try:
+                            await client.send_message(raw_id, report, parse_mode="md")
+                        except Exception:
+                            pass
 
             # ── Mark seen + update stats (file_lock protects file writes) ─────
             async with file_lock:
@@ -372,6 +435,9 @@ async def _account_worker(
             except Exception:
                 acc_name = f"حساب {acc_index}"
 
+            # Pre-resolve archive channel entities once (avoids per-message cache misses)
+            channel_entities = await _resolve_archive_channels(client, db)
+
             # Process in batches to periodically check stop/pause
             batch_size = MAX_CONCURRENT * 4
             batches = [links_subset[i: i + batch_size] for i in range(0, len(links_subset), batch_size)]
@@ -392,6 +458,7 @@ async def _account_worker(
                         sem, link, client, acc_name,
                         db, file_lock, seen_set,
                         extra_links, counters,
+                        channel_entities,
                     )
                     for link in batch
                     if normalize_link(link) not in seen_set  # double-check before launching
