@@ -1,6 +1,8 @@
 {
   "accounts": [
-    "sessions/967774221636"
+    "sessions/967774221636",
+    "sessions/967714779528",
+    "sessions/967734549304"
   ],
   "sources": [
     "https://t.me/+vyyRHfdFp61kM2I0",
@@ -22,13 +24,13 @@
   "progress": {
     "source_index": 0,
     "last_msg_id": 0,
-    "last_sorted_index": 5420
+    "last_sorted_index": 0
   },
   "stats": {
-    "total_found": 5987,
-    "total_sorted": 1997,
-    "total_broken": 3384,
+    "total_found": 9215,
+    "total_sorted": 3318,
+    "total_broken": 5291,
     "total_skipped_duplicate": 0,
-    "total_invite": 1817
+    "total_invite": 2752
   }
 }
