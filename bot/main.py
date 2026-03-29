@@ -563,6 +563,7 @@ async def make_ch_handler(event):
                 [Button.inline("🔗 انضمام عبر روابط دعوة", b"join_via_invites")],
                 [Button.inline("➕ أضفني للقنوات كمسؤول", b"add_owner_to_ch")],
                 [Button.inline("🔄 إعادة إنشاء القنوات", b"recreate_channels_confirm")],
+                [Button.inline("🔁 إعادة الفرز من البداية", b"resort_from_scratch_confirm")],
                 [Button.inline("⏭️ إضافة مصادر ◄", b"add_src")],
                 nav_row(),
             ],
@@ -788,6 +789,65 @@ async def recreate_channels_do_handler(event):
         buttons=[
             [Button.inline("🔗 انضمام عبر روابط دعوة", b"join_via_invites")],
             [Button.inline("⏭️ إضافة مصادر ◄", b"add_src")],
+            nav_row(),
+        ],
+        parse_mode="md",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Re-sort from scratch (clears seen-set + progress, re-processes all links)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bot.on(events.CallbackQuery(data=b"resort_from_scratch_confirm"))
+@owner_only
+async def resort_from_scratch_confirm_handler(event):
+    await event.answer()
+    raw_count  = get_raw_count()
+    seen_count = get_seen_count()
+    await event.respond(
+        "⚠️ **إعادة الفرز من البداية**\n\n"
+        "سيتم:\n"
+        f"• مسح سجل الروابط المرئية ({seen_count:,} رابط)\n"
+        f"• إعادة ضبط مؤشر التقدم (من 0 / {raw_count:,})\n"
+        "• إعادة فرز جميع الروابط وإرسالها للقنوات\n\n"
+        "⚠️ هذا يفيد إذا كان الفرز السابق لم يُرسل الروابط للقنوات بسبب مشكلة في الوصول.\n\n"
+        "هل أنت متأكد؟",
+        buttons=[
+            [Button.inline("✅ نعم، أعد الفرز من البداية", b"resort_from_scratch_do")],
+            [Button.inline("❌ إلغاء", b"make_ch")],
+            nav_row(),
+        ],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=b"resort_from_scratch_do"))
+@owner_only
+async def resort_from_scratch_do_handler(event):
+    await event.answer("⏳ جاري المسح وإعادة الضبط...")
+
+    # 1) Clear the seen-set file
+    clear_seen()
+
+    # 2) Reset progress index and stats
+    db.setdefault("progress", {})["last_sorted_index"] = 0
+    db.setdefault("stats", {}).update({
+        "total_sorted": 0,
+        "total_broken": 0,
+        "total_invite": 0,
+        "total_found":  0,
+    })
+    save_db(db)
+
+    raw_count = get_raw_count()
+    await event.respond(
+        f"✅ **تم إعادة الضبط.**\n\n"
+        f"• سجل الروابط المرئية: ممسوح\n"
+        f"• مؤشر التقدم: 0 / {raw_count:,}\n\n"
+        f"اضغط **⚡ فرز** لبدء الفرز من جديد وإرسال الروابط للقنوات.",
+        buttons=[
+            [Button.inline("⚡ بدء الفرز الآن ◄", b"run_sort")],
             nav_row(),
         ],
         parse_mode="md",

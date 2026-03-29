@@ -273,20 +273,38 @@ async def _resolve_archive_channels(client: TelegramClient, db: dict) -> dict:
     hashes       = db.get("channels_hashes", {})
     invite_links = db.get("channels_invites", [])
     resolved     = {}
+    new_hashes   = {}     # hashes discovered in THIS call (to persist later)
 
-    # Build invite_hash list once
-    invite_hashes = []
+    # ── Strategy 3 pre-pass: CheckChatInviteRequest for all invite links ─────
+    # Fetch ONCE per invite link (not per channel) → build {ch_id: entity} map.
+    # Works even when the account is at the 500-channel limit because
+    # CheckChatInviteRequest never actually joins; for already-joined channels
+    # it returns ChatInviteAlready with the full entity and access hash.
+    invite_entity_map: dict[int, object] = {}   # bare channel_id → entity
     for link in invite_links:
         m = re.search(r't\.me/(?:\+|joinchat/)([A-Za-z0-9_\-]+)', link)
-        if m:
-            invite_hashes.append(m.group(1))
+        if not m:
+            continue
+        inv_hash = m.group(1)
+        try:
+            result = await client(CheckChatInviteRequest(inv_hash))
+            chat   = getattr(result, "chat", None)
+            chats  = list(getattr(result, "chats", []))
+            for c in ([chat] if chat else []) + chats:
+                if c and hasattr(c, "id"):
+                    invite_entity_map[c.id] = c
+        except (InviteHashExpiredError, InviteHashInvalidError):
+            continue
+        except Exception:
+            continue
 
+    # ── Per-channel resolution ───────────────────────────────────────────────
     for key, ch_id in channels.items():
         if not isinstance(ch_id, int):
             continue
         entity = None
 
-        # 1) Use stored access hash — requires no session cache at all
+        # 1) Stored access hash — no session cache needed (fastest)
         if key in hashes:
             try:
                 result = await client(GetChannelsRequest(
@@ -294,58 +312,46 @@ async def _resolve_archive_channels(client: TelegramClient, db: dict) -> dict:
                 ))
                 if result.chats:
                     entity = result.chats[0]
-                    # Refresh stored hash in case it changed
                     if hasattr(entity, "access_hash"):
-                        hashes[key] = entity.access_hash
+                        new_hashes[key] = entity.access_hash
             except Exception:
                 pass
 
-        # 2) PeerChannel via GetChannelsRequest (cache-independent API call)
+        # 2) PeerChannel via GetChannelsRequest (works if dialogs were cached)
         if entity is None:
             try:
                 result = await client(GetChannelsRequest([PeerChannel(ch_id)]))
                 if result.chats:
                     entity = result.chats[0]
                     if hasattr(entity, "access_hash"):
-                        hashes[key] = entity.access_hash
-                        if "channels_hashes" not in db:
-                            db["channels_hashes"] = {}
-                        db["channels_hashes"][key] = entity.access_hash
+                        new_hashes[key] = entity.access_hash
             except Exception:
                 pass
 
-        # 3) CheckChatInviteRequest — works even when at channel join limit
-        if entity is None and invite_hashes:
-            for inv_hash in invite_hashes:
-                try:
-                    result = await client(CheckChatInviteRequest(inv_hash))
-                    chat = getattr(result, "chat", None)
-                    chats = getattr(result, "chats", [])
-                    all_chats = ([chat] if chat else []) + list(chats)
-                    for c in all_chats:
-                        if getattr(c, "id", None) == ch_id:
-                            entity = c
-                            if hasattr(c, "access_hash"):
-                                if "channels_hashes" not in db:
-                                    db["channels_hashes"] = {}
-                                db["channels_hashes"][key] = c.access_hash
-                            break
-                    if entity is not None:
-                        break
-                except (InviteHashExpiredError, InviteHashInvalidError):
-                    continue
-                except Exception:
-                    continue
+        # 3) CheckChatInviteRequest pre-pass result
+        if entity is None and ch_id in invite_entity_map:
+            entity = invite_entity_map[ch_id]
+            if hasattr(entity, "access_hash"):
+                new_hashes[key] = entity.access_hash
 
         # 4) Local session cache fallback
         if entity is None:
             try:
                 entity = await client.get_entity(PeerChannel(ch_id))
+                if hasattr(entity, "access_hash"):
+                    new_hashes[key] = entity.access_hash
             except Exception:
                 pass
 
         if entity is not None:
             resolved[key] = entity
+
+    # Persist any newly discovered access hashes back into db (in-memory).
+    # The caller (account worker) is responsible for calling save_db().
+    if new_hashes:
+        if "channels_hashes" not in db:
+            db["channels_hashes"] = {}
+        db["channels_hashes"].update(new_hashes)
 
     return resolved
 
@@ -407,19 +413,37 @@ async def _process_one(
                 account_name, addlist_children or None,
             )
 
-            # ── Post to the correct archive channel (using pre-resolved entity) ──
+            # ── Post to the correct archive channel ───────────────────────────
+            # Always attempt the send. Try multiple targets in order:
+            #  1. Pre-resolved entity (from _resolve_archive_channels)
+            #  2. InputChannel(ch_id, stored_hash) — works without session cache
+            #  3. Raw integer ID — last resort
+            sent = False
             target_entity = channel_entities.get(channel_key)
             if target_entity is not None:
                 try:
                     await client.send_message(target_entity, report, parse_mode="md")
+                    sent = True
+                except FloodWaitError:
+                    raise
                 except Exception:
-                    # Fallback to raw ID if entity became stale
-                    raw_id = db["channels"].get(channel_key)
-                    if raw_id and isinstance(raw_id, int):
-                        try:
-                            await client.send_message(raw_id, report, parse_mode="md")
-                        except Exception:
-                            pass
+                    pass
+
+            if not sent:
+                raw_id   = db.get("channels", {}).get(channel_key)
+                raw_hash = db.get("channels_hashes", {}).get(channel_key)
+                if raw_id and isinstance(raw_id, int):
+                    target = (
+                        InputChannel(raw_id, raw_hash)
+                        if raw_hash else raw_id
+                    )
+                    try:
+                        await client.send_message(target, report, parse_mode="md")
+                        sent = True
+                    except FloodWaitError:
+                        raise
+                    except Exception:
+                        pass
 
             # ── Mark seen + update stats (file_lock protects file writes) ─────
             async with file_lock:
@@ -479,6 +503,18 @@ async def _account_worker(
 
             # Pre-resolve archive channel entities once (avoids per-message cache misses)
             channel_entities = await _resolve_archive_channels(client, db)
+
+            # Persist any newly discovered access hashes back to disk
+            if channel_entities:
+                try:
+                    save_db(db)
+                except Exception:
+                    pass
+
+            logger.info(
+                "sorter: account %s resolved %d/%d archive channels",
+                acc_name, len(channel_entities), len(db.get("channels", {}))
+            )
 
             # Process in batches to periodically check stop/pause
             batch_size = MAX_CONCURRENT * 4
