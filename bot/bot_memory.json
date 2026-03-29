@@ -22,13 +22,13 @@
   "progress": {
     "source_index": 0,
     "last_msg_id": 0,
-    "last_sorted_index": 3040
+    "last_sorted_index": 5420
   },
   "stats": {
-    "total_found": 3607,
-    "total_sorted": 1242,
-    "total_broken": 1759,
+    "total_found": 5987,
+    "total_sorted": 1997,
+    "total_broken": 3384,
     "total_skipped_duplicate": 0,
-    "total_invite": 1067
+    "total_invite": 1817
   }
 }

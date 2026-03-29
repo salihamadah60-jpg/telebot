@@ -114,7 +114,7 @@ async def harvest_sources(
                 last_save_at  = 0
 
                 # Inner iteration — handles FloodWait inside the loop
-                async for msg in client.iter_messages(source, limit=None):
+                async for msg in client.iter_messages(source, limit=None, reverse=True):
                     # Check stop flag per message
                     if sorter_ctrl.harvest_stop:
                         break
