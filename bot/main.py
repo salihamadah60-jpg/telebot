@@ -33,7 +33,7 @@ from channel_setup import (
     join_accounts_via_invites,
 )
 from harvester import harvest_sources
-from sorter import run_sorter
+from sorter import run_sorter, clear_archive_channels
 from joiner import run_smart_joiner
 from searcher import run_smart_discovery
 import state as sorter_ctrl
@@ -1453,26 +1453,29 @@ async def stats_handler(event):
 @owner_only
 async def clear_mem_handler(event):
     await event.answer()
+    has_channels = bool(db.get("channels"))
+    buttons = [
+        [Button.inline("🧹 مسح الذاكرة فقط", b"confirm_clear")],
+    ]
+    if has_channels:
+        buttons.append([Button.inline("🗑 مسح الذاكرة + حذف من القنوات", b"confirm_clear_full")])
+    buttons.append([Button.inline("❌ إلغاء", b"home")])
     await event.respond(
         "⚠️ **تحذير — مسح الذاكرة**\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "سيتم مسح:\n"
         "• ذاكرة الروابط المفحوصة\n"
-        "• مؤشر التقدم في الفرز\n\n"
-        "هذا يعني إعادة الفرز من البداية.\n"
+        "• مؤشر التقدم في الفرز\n"
+        "• الإحصائيات\n\n"
+        "الخيار الثاني يحذف **جميع الرسائل** من قنوات الأرشيف أيضاً.\n\n"
         "**هل أنت متأكد؟**",
-        buttons=[
-            [Button.inline("✅ نعم، امسح الذاكرة", b"confirm_clear")],
-            [Button.inline("❌ إلغاء", b"home")],
-        ],
+        buttons=buttons,
         parse_mode="md",
     )
 
 
-@bot.on(events.CallbackQuery(data=b"confirm_clear"))
-@owner_only
-async def confirm_clear_handler(event):
-    await event.answer()
+def _do_clear_memory():
+    """Reset seen links, stats, and sort progress in-place."""
     clear_seen()
     db["stats"] = {
         "total_found": 0, "total_sorted": 0,
@@ -1480,8 +1483,55 @@ async def confirm_clear_handler(event):
     }
     db["progress"]["last_sorted_index"] = 0
     save_db(db)
+
+
+@bot.on(events.CallbackQuery(data=b"confirm_clear"))
+@owner_only
+async def confirm_clear_handler(event):
+    await event.answer()
+    _do_clear_memory()
     await event.respond(
         "✅ **تم مسح الذاكرة.**\nيمكنك الآن بدء الفرز من جديد.",
+        buttons=[[Button.inline("⚡ بدء الفرز ◄", b"run_sort")], nav_row()],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=b"confirm_clear_full"))
+@owner_only
+async def confirm_clear_full_handler(event):
+    await event.answer()
+    if not db.get("accounts"):
+        await event.respond(
+            "❌ لا توجد حسابات مرتبطة — لا يمكن حذف الرسائل.\n"
+            "سيتم مسح الذاكرة فقط.",
+            buttons=[nav_row()],
+            parse_mode="md",
+        )
+        _do_clear_memory()
+        return
+
+    _do_clear_memory()
+
+    prog_msg = await event.respond(
+        "🗑 **جاري حذف الرسائل من قنوات الأرشيف...**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "⏳ جاري التحضير...",
+        parse_mode="md",
+    )
+
+    edit_cb = make_edit_callback(prog_msg.id, OWNER_ID)
+
+    results = await clear_archive_channels(db["accounts"], db, status_callback=edit_cb)
+
+    total_deleted = sum(results.values())
+    summary_lines = [f"  • {k}: {v} رسالة" for k, v in results.items()]
+    await bot.edit_message(
+        OWNER_ID, prog_msg.id,
+        f"✅ **تم مسح الذاكرة وحذف رسائل الأرشيف.**\n\n"
+        f"🗑 إجمالي الرسائل المحذوفة: **{total_deleted:,}**\n"
+        + "\n".join(summary_lines) + "\n\n"
+        f"يمكنك الآن بدء الفرز من جديد.",
         buttons=[[Button.inline("⚡ بدء الفرز ◄", b"run_sort")], nav_row()],
         parse_mode="md",
     )

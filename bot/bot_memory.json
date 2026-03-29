@@ -27,14 +27,14 @@
   "progress": {
     "source_index": 0,
     "last_msg_id": 0,
-    "last_sorted_index": 8780
+    "last_sorted_index": 0
   },
   "stats": {
-    "total_found": 9347,
-    "total_sorted": 3318,
-    "total_broken": 5423,
+    "total_found": 360,
+    "total_sorted": 249,
+    "total_broken": 111,
     "total_skipped_duplicate": 0,
-    "total_invite": 2752
+    "total_invite": 199
   },
   "channels_invites": [
     "https://t.me/+FybdfjJ39a00MWI8",
@@ -46,12 +46,12 @@
     "https://t.me/+tBpEunjwawhjNjE8"
   ],
   "channels_hashes": {
-    "other": -2671183450466144910,
-    "bots": 8659736366056439438,
-    "addlist": 5843800045201951022,
-    "invite": 5771981795006356310,
-    "broken": 4602694781142537253,
-    "groups": -8204350516261792625,
-    "channels": 4645593859743738526
+    "other": -6362935876813080436,
+    "bots": -5334817834047667033,
+    "addlist": 2365729509888895644,
+    "invite": -5994932890137970263,
+    "broken": 1512384314586768789,
+    "groups": -210721234078808836,
+    "channels": 429369292596575676
   }
 }

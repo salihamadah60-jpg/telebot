@@ -55,6 +55,7 @@ from config import (
     DELAY_MAX,
     MAX_CONCURRENT,
     OWNER_ID,
+    BOT_ID,
 )
 import state as sorter_ctrl
 
@@ -66,6 +67,8 @@ import state as sorter_ctrl
 async def get_entity_info(client: TelegramClient, link: str) -> dict:
     try:
         entity = await client.get_entity(link)
+    except FloodWaitError:
+        raise
     except Exception as e:
         return {
             "ok": False,
@@ -371,10 +374,20 @@ async def _process_one(
     extra_links: list,
     counters: dict,
     channel_entities: dict,
+    skip_entity_ids: set,
+    skip_normalized: set,
 ) -> None:
     """Process a single link: inspect → route → post to archive channel → mark seen."""
     async with sem:
         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+
+        # Skip if the normalized link itself is in the exclusion set
+        if normalize_link(link) in skip_normalized:
+            async with file_lock:
+                seen_set.add(normalize_link(link))
+                mark_seen(link)
+                counters["done"] += 1
+            return
 
         try:
             _is_add = is_addlist_link(link)
@@ -387,6 +400,15 @@ async def _process_one(
                         extra_links.extend(addlist_children)
 
             info = await get_entity_info(client, link)
+
+            # Skip own bot, archive channels, and source groups by entity ID
+            entity_id = getattr(info.get("entity"), "id", None)
+            if entity_id and (entity_id in skip_entity_ids or entity_id == BOT_ID):
+                async with file_lock:
+                    seen_set.add(normalize_link(link))
+                    mark_seen(link)
+                    counters["done"] += 1
+                return
 
             med = (
                 is_medical(
@@ -487,6 +509,8 @@ async def _account_worker(
     counters: dict,
     acc_index: int,
     total_accs: int,
+    skip_entity_ids: set,
+    skip_normalized: set,
 ) -> None:
     if not links_subset:
         return
@@ -537,6 +561,8 @@ async def _account_worker(
                         db, file_lock, seen_set,
                         extra_links, counters,
                         channel_entities,
+                        skip_entity_ids,
+                        skip_normalized,
                     )
                     for link in batch
                     if normalize_link(link) not in seen_set  # double-check before launching
@@ -615,10 +641,19 @@ async def run_sorter(
     # ── Load seen set into memory (O(1) lookups instead of O(n) file reads) ───
     seen_set = load_seen_set()
 
-    # ── Build pending list: from start_from onward, skip already-seen ─────────
+    # ── Build exclusion sets: source links, archive channel IDs ───────────────
+    # Normalized source links (t.me/... as-is)
+    source_norm: set = {normalize_link(s) for s in db.get("sources", [])}
+    # Archive channel entity IDs (to skip by ID after resolving)
+    skip_entity_ids: set = {v for v in db.get("channels", {}).values() if isinstance(v, int)}
+    # Combined normalized skip set: sources + any t.me username variants stored
+    skip_normalized: set = set(source_norm)
+
+    # ── Build pending list: from start_from onward, skip already-seen & sources
     pending = [
         lnk for lnk in raw_links[start_from:]
         if normalize_link(lnk) not in seen_set
+        and normalize_link(lnk) not in skip_normalized
     ]
     total = len(pending)
 
@@ -672,6 +707,8 @@ async def run_sorter(
                 counters=counters,
                 acc_index=i + 1,
                 total_accs=num_accounts,
+                skip_entity_ids=skip_entity_ids,
+                skip_normalized=skip_normalized,
             )
             for i in range(num_accounts)
             if subsets[i]
@@ -733,3 +770,87 @@ async def run_sorter(
             )
         except Exception:
             pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Clear archive channels — delete all messages from every archive channel
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def clear_archive_channels(accounts: list, db: dict, status_callback=None) -> dict:
+    """
+    Delete all messages from every archive channel using the first available account.
+    Returns {channel_key: deleted_count}.
+    """
+    if not accounts:
+        return {}
+
+    channels = {k: v for k, v in db.get("channels", {}).items() if isinstance(v, int)}
+    if not channels:
+        return {}
+
+    results = {}
+
+    # Try each account until one connects successfully
+    for session in accounts:
+        try:
+            async with TelegramClient(session, API_ID, API_HASH, flood_sleep_threshold=60) as client:
+                # Pre-resolve channel entities
+                channel_entities = await _resolve_archive_channels(client, db)
+
+                for key, ch_id in channels.items():
+                    entity = channel_entities.get(key)
+                    if entity is None:
+                        # Try raw ID as fallback
+                        try:
+                            entity = await client.get_entity(PeerChannel(ch_id))
+                        except Exception:
+                            results[key] = 0
+                            continue
+
+                    deleted = 0
+                    try:
+                        # Collect all message IDs in batches
+                        msg_ids = []
+                        async for msg in client.iter_messages(entity, limit=None):
+                            msg_ids.append(msg.id)
+                            if len(msg_ids) >= 100:
+                                try:
+                                    await client.delete_messages(entity, msg_ids)
+                                    deleted += len(msg_ids)
+                                except FloodWaitError as e:
+                                    await asyncio.sleep(e.seconds)
+                                    await client.delete_messages(entity, msg_ids)
+                                    deleted += len(msg_ids)
+                                except Exception:
+                                    pass
+                                msg_ids = []
+                        # Delete remaining
+                        if msg_ids:
+                            try:
+                                await client.delete_messages(entity, msg_ids)
+                                deleted += len(msg_ids)
+                            except FloodWaitError as e:
+                                await asyncio.sleep(e.seconds)
+                                await client.delete_messages(entity, msg_ids)
+                                deleted += len(msg_ids)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
+                    results[key] = deleted
+                    if status_callback:
+                        try:
+                            done_count = sum(1 for v in results.values())
+                            await status_callback(
+                                f"🗑 جاري مسح القنوات... {done_count}/{len(channels)}\n"
+                                f"  ✓ {key}: {deleted} رسالة محذوفة"
+                            )
+                        except Exception:
+                            pass
+
+            return results  # success — stop trying accounts
+        except Exception:
+            continue
+
+    return results

@@ -7,6 +7,7 @@ API_ID   = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 OWNER_ID  = int(os.getenv("OWNER_ID", "0"))
+BOT_ID    = int(BOT_TOKEN.split(":")[0]) if BOT_TOKEN and ":" in BOT_TOKEN else 0
 
 DATA_FILE      = "bot_memory.json"
 SEEN_LINKS_FILE = "global_seen.txt"
