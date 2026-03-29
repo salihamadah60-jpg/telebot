@@ -360,33 +360,30 @@ async def _resolve_archive_channels(client: TelegramClient, db: dict) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Single-link processor (shared client per worker)
+# Single-link inspector (pushes result into shared queue, does NOT post)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _process_one(
+async def _inspect_one(
     sem: asyncio.Semaphore,
     link: str,
     client: TelegramClient,
     account_name: str,
-    db: dict,
     file_lock: asyncio.Lock,
-    seen_set: set,
     extra_links: list,
-    counters: dict,
-    channel_entities: dict,
+    result_queue: asyncio.Queue,
     skip_entity_ids: set,
     skip_normalized: set,
 ) -> None:
-    """Process a single link: inspect → route → post to archive channel → mark seen."""
+    """
+    Inspect a single link — resolve entity, classify, build report — then push
+    the result into the shared queue for the dedicated poster to send.
+    Does NOT touch archive channels directly.
+    """
     async with sem:
         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
-        # Skip if the normalized link itself is in the exclusion set
         if normalize_link(link) in skip_normalized:
-            async with file_lock:
-                seen_set.add(normalize_link(link))
-                mark_seen(link)
-                counters["done"] += 1
+            await result_queue.put({"link": link, "action": "skip"})
             return
 
         try:
@@ -401,13 +398,9 @@ async def _process_one(
 
             info = await get_entity_info(client, link)
 
-            # Skip own bot, archive channels, and source groups by entity ID
             entity_id = getattr(info.get("entity"), "id", None)
             if entity_id and (entity_id in skip_entity_ids or entity_id == BOT_ID):
-                async with file_lock:
-                    seen_set.add(normalize_link(link))
-                    mark_seen(link)
-                    counters["done"] += 1
+                await result_queue.put({"link": link, "action": "skip"})
                 return
 
             med = (
@@ -418,7 +411,6 @@ async def _process_one(
                 )
                 if info.get("ok") else True
             )
-
             specialty = (
                 classify_specialty(
                     info.get("title", ""),
@@ -429,70 +421,136 @@ async def _process_one(
             )
 
             channel_key = route_to_channel(link, info, _is_add, med)
-
             report = build_report(
                 link, info, specialty, channel_key,
                 account_name, addlist_children or None,
             )
 
-            # ── Post to the correct archive channel ───────────────────────────
-            # Always attempt the send. Try multiple targets in order:
-            #  1. Pre-resolved entity (from _resolve_archive_channels)
-            #  2. InputChannel(ch_id, stored_hash) — works without session cache
-            #  3. Raw integer ID — last resort
-            sent = False
-            target_entity = channel_entities.get(channel_key)
-            if target_entity is not None:
-                try:
-                    await client.send_message(target_entity, report, parse_mode="md")
-                    sent = True
-                except FloodWaitError:
-                    raise
-                except Exception:
-                    pass
-
-            if not sent:
-                raw_id   = db.get("channels", {}).get(channel_key)
-                raw_hash = db.get("channels_hashes", {}).get(channel_key)
-                if raw_id and isinstance(raw_id, int):
-                    target = (
-                        InputChannel(raw_id, raw_hash)
-                        if raw_hash else raw_id
-                    )
-                    try:
-                        await client.send_message(target, report, parse_mode="md")
-                        sent = True
-                    except FloodWaitError:
-                        raise
-                    except Exception:
-                        pass
-
-            # ── Mark seen + update stats (file_lock protects file writes) ─────
-            async with file_lock:
-                seen_set.add(normalize_link(link))
-                mark_seen(link)
-
-                if channel_key == "broken":
-                    db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
-                elif channel_key == "invite":
-                    db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
-                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-                else:
-                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-                db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
-
-                counters["done"] += 1
+            await result_queue.put({
+                "link": link,
+                "action": "post",
+                "channel_key": channel_key,
+                "report": report,
+            })
 
         except FloodWaitError as e:
             await asyncio.sleep(e.seconds)
-            async with file_lock:
-                counters["errors"] += 1
+            await result_queue.put({"link": link, "action": "error"})
         except Exception:
-            async with file_lock:
-                mark_seen(link)
-                seen_set.add(normalize_link(link))
-                counters["done"] += 1
-                counters["errors"] += 1
+            await result_queue.put({"link": link, "action": "error"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Dedicated poster — one account, reads from queue, sends everything
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def _poster_worker(
+    session: str,
+    db: dict,
+    file_lock: asyncio.Lock,
+    seen_set: set,
+    result_queue: asyncio.Queue,
+    counters: dict,
+) -> None:
+    """
+    Single dedicated poster: uses accounts[0] to send all inspection results to
+    archive channels. Runs until it receives the None sentinel.
+    """
+    try:
+        async with TelegramClient(session, API_ID, API_HASH, flood_sleep_threshold=60) as client:
+            channel_entities = await _resolve_archive_channels(client, db)
+            if channel_entities:
+                try:
+                    save_db(db)
+                except Exception:
+                    pass
+            print(
+                f"poster: resolved {len(channel_entities)}/{len(db.get('channels', {}))} archive channels"
+            )
+
+            while True:
+                item = await result_queue.get()
+
+                if item is None:  # sentinel — all inspectors finished
+                    break
+
+                link   = item["link"]
+                action = item["action"]
+
+                if action in ("skip", "error"):
+                    async with file_lock:
+                        seen_set.add(normalize_link(link))
+                        mark_seen(link)
+                        counters["done"] += 1
+                        if action == "error":
+                            counters["errors"] += 1
+                    continue
+
+                # action == "post"
+                channel_key = item["channel_key"]
+                report      = item["report"]
+
+                sent = False
+                target_entity = channel_entities.get(channel_key)
+                if target_entity is not None:
+                    try:
+                        await client.send_message(target_entity, report, parse_mode="md")
+                        sent = True
+                    except FloodWaitError as e:
+                        await asyncio.sleep(e.seconds)
+                        try:
+                            await client.send_message(target_entity, report, parse_mode="md")
+                            sent = True
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                if not sent:
+                    raw_id   = db.get("channels", {}).get(channel_key)
+                    raw_hash = db.get("channels_hashes", {}).get(channel_key)
+                    if raw_id and isinstance(raw_id, int):
+                        target = InputChannel(raw_id, raw_hash) if raw_hash else raw_id
+                        try:
+                            await client.send_message(target, report, parse_mode="md")
+                            sent = True
+                        except FloodWaitError as e:
+                            await asyncio.sleep(e.seconds)
+                            try:
+                                await client.send_message(target, report, parse_mode="md")
+                                sent = True
+                            except Exception:
+                                pass
+                        except Exception:
+                            pass
+
+                async with file_lock:
+                    seen_set.add(normalize_link(link))
+                    mark_seen(link)
+                    if channel_key == "broken":
+                        db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
+                    elif channel_key == "invite":
+                        db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
+                        db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                    else:
+                        db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                    db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
+                    if not sent:
+                        counters["errors"] += 1
+                    counters["done"] += 1
+
+    except Exception:
+        # Poster crashed — drain the queue so inspection workers don't block forever
+        while True:
+            try:
+                item = result_queue.get_nowait()
+                if item is None:
+                    break
+                async with file_lock:
+                    counters["errors"] = counters.get("errors", 0) + 1
+                    counters["done"]   = counters.get("done", 0) + 1
+            except asyncio.QueueEmpty:
+                break
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -502,16 +560,16 @@ async def _process_one(
 async def _account_worker(
     session: str,
     links_subset: list,
-    db: dict,
     file_lock: asyncio.Lock,
     seen_set: set,
     extra_links: list,
+    result_queue: asyncio.Queue,
     counters: dict,
     acc_index: int,
-    total_accs: int,
     skip_entity_ids: set,
     skip_normalized: set,
 ) -> None:
+    """Inspection-only worker: resolves entity info and feeds results into result_queue."""
     if not links_subset:
         return
 
@@ -525,57 +583,37 @@ async def _account_worker(
             except Exception:
                 acc_name = f"حساب {acc_index}"
 
-            # Pre-resolve archive channel entities once (avoids per-message cache misses)
-            channel_entities = await _resolve_archive_channels(client, db)
+            print(f"inspector: account {acc_name} — {len(links_subset):,} links assigned")
 
-            # Persist any newly discovered access hashes back to disk
-            if channel_entities:
-                try:
-                    save_db(db)
-                except Exception:
-                    pass
-
-            print(
-                f"sorter: account {acc_name} resolved "
-                f"{len(channel_entities)}/{len(db.get('channels', {}))} archive channels"
-            )
-
-            # Process in batches to periodically check stop/pause
             batch_size = MAX_CONCURRENT * 4
             batches = [links_subset[i: i + batch_size] for i in range(0, len(links_subset), batch_size)]
 
             for batch in batches:
-                # Check stop
                 if sorter_ctrl.is_stopped():
                     break
 
-                # Wait out pause
                 while sorter_ctrl.is_paused():
                     await asyncio.sleep(2)
                     if sorter_ctrl.is_stopped():
                         return
 
                 tasks = [
-                    _process_one(
+                    _inspect_one(
                         sem, link, client, acc_name,
-                        db, file_lock, seen_set,
-                        extra_links, counters,
-                        channel_entities,
-                        skip_entity_ids,
-                        skip_normalized,
+                        file_lock, extra_links, result_queue,
+                        skip_entity_ids, skip_normalized,
                     )
                     for link in batch
-                    if normalize_link(link) not in seen_set  # double-check before launching
+                    if normalize_link(link) not in seen_set
                 ]
                 if tasks:
                     await asyncio.gather(*tasks, return_exceptions=True)
 
-                # Save progress after each batch
+                # Periodic progress save
                 async with file_lock:
-                    db["progress"]["last_sorted_index"] = counters.get("global_done", 0)
-                    save_db(db)
+                    counters["inspected"] = counters.get("inspected", 0) + len(tasks)
 
-    except Exception as e:
+    except Exception:
         async with file_lock:
             counters["errors"] = counters.get("errors", 0) + 1
 
@@ -665,10 +703,13 @@ async def run_sorter(
         return
 
     num_accounts = len(accounts)
+    poster_session = accounts[0]  # first (most reliable) account handles all posting
+
     await status_callback(
         f"⚡ **الفرز الموزع — بدء**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 حسابات: **{num_accounts}** | 🔗 روابط: **{total:,}**\n"
+        f"👤 حسابات الفحص: **{num_accounts}** | 📮 حساب الإرسال: 1\n"
+        f"🔗 روابط: **{total:,}**\n"
         f"{'🔄 استئناف من حيث توقفنا' if start_from > 0 else '⚡ بدء جديد'}\n"
         + "\n".join(
             f"  · حساب {i+1}: **{len(pending[i::num_accounts]):,}** رابط"
@@ -679,9 +720,10 @@ async def run_sorter(
     # ── Split links across accounts (round-robin) ─────────────────────────────
     subsets = [pending[i::num_accounts] for i in range(num_accounts)]
 
-    file_lock   = asyncio.Lock()
+    file_lock    = asyncio.Lock()
     extra_links: list[str] = []
-    counters    = {"done": 0, "errors": 0}
+    counters     = {"done": 0, "errors": 0, "inspected": 0}
+    result_queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
 
     # ── Progress reporter background task ─────────────────────────────────────
     prog_msg_id  = sorter_ctrl.progress_msg_id
@@ -694,19 +736,23 @@ async def run_sorter(
         )
     ) if prog_msg_id and prog_chat_id else None
 
-    # ── Run all account workers simultaneously ────────────────────────────────
+    # ── Start dedicated poster (accounts[0]) ──────────────────────────────────
+    poster_task = asyncio.create_task(
+        _poster_worker(poster_session, db, file_lock, seen_set, result_queue, counters)
+    )
+
+    # ── Run all inspection workers simultaneously ─────────────────────────────
     try:
         workers = [
             _account_worker(
                 session=accounts[i],
                 links_subset=subsets[i],
-                db=db,
                 file_lock=file_lock,
                 seen_set=seen_set,
                 extra_links=extra_links,
+                result_queue=result_queue,
                 counters=counters,
                 acc_index=i + 1,
-                total_accs=num_accounts,
                 skip_entity_ids=skip_entity_ids,
                 skip_normalized=skip_normalized,
             )
@@ -721,6 +767,10 @@ async def run_sorter(
                 await reporter
             except asyncio.CancelledError:
                 pass
+
+    # ── Signal poster that all inspections are done, then wait for it ─────────
+    await result_queue.put(None)
+    await poster_task
 
     # ── Save final progress index ─────────────────────────────────────────────
     async with file_lock:
