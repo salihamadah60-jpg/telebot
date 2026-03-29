@@ -1,13 +1,20 @@
 import asyncio
 import logging
+import re
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, UserAlreadyParticipantError
+from telethon.errors import (
+    FloodWaitError,
+    UserAlreadyParticipantError,
+    InviteHashExpiredError,
+    InviteHashInvalidError,
+)
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
     InviteToChannelRequest,
     EditAdminRequest,
     GetChannelsRequest,
 )
+from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.types import ChatAdminRights, PeerChannel, InputChannel
 from config import API_ID, API_HASH, CHANNEL_KEYS, OWNER_ID
 
@@ -284,3 +291,97 @@ async def _add_owner_to_channels(
             log.warning(
                 "channel_setup: promote owner in %s failed: %s", key, e
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Join via invite links (bypasses entity-cache issues entirely)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _update_db_from_chat(chat, db: dict) -> bool:
+    """
+    If this chat entity matches a known archive channel ID, store its access hash.
+    Returns True if a match was found and stored.
+    """
+    ch_id    = getattr(chat, "id", None)
+    ch_hash  = getattr(chat, "access_hash", None)
+    if ch_id is None or ch_hash is None:
+        return False
+    if "channels_hashes" not in db:
+        db["channels_hashes"] = {}
+    for key, stored_id in db.get("channels", {}).items():
+        if stored_id == ch_id:
+            db["channels_hashes"][key] = ch_hash
+            return True
+    return False
+
+
+async def join_accounts_via_invites(
+    sessions: list[str],
+    invite_links: list[str],
+    db: dict,
+    save_db_fn=None,
+) -> dict:
+    """
+    Join every session to the archive channels using invite links.
+    This bypasses the entity-cache problem entirely:
+      - ImportChatInviteRequest returns the full channel entity (with access hash).
+      - We store those access hashes in db["channels_hashes"].
+      - After joining, we also try to promote each account to admin using the
+        now-cached entities.
+
+    Returns a per-session summary: {session: {"joined": N, "already": N, "errors": N}}.
+    """
+    summary: dict = {}
+
+    for sess in sessions:
+        stats = {"joined": 0, "already": 0, "errors": 0}
+        try:
+            async with TelegramClient(sess, API_ID, API_HASH) as client:
+                for link in invite_links:
+                    m = re.search(r't\.me/(?:\+|joinchat/)([A-Za-z0-9_\-]+)', link)
+                    if not m:
+                        continue
+                    invite_hash = m.group(1)
+
+                    try:
+                        updates = await client(ImportChatInviteRequest(invite_hash))
+                        stats["joined"] += 1
+                        for chat in getattr(updates, "chats", []):
+                            _update_db_from_chat(chat, db)
+
+                    except UserAlreadyParticipantError:
+                        stats["already"] += 1
+
+                    except (InviteHashExpiredError, InviteHashInvalidError) as e:
+                        log.warning("channel_setup: invite link %s invalid: %s", link, e)
+                        stats["errors"] += 1
+
+                    except FloodWaitError as e:
+                        await asyncio.sleep(e.seconds)
+
+                    except Exception as e:
+                        log.warning("channel_setup: join via invite %s failed: %s", link, e)
+                        stats["errors"] += 1
+
+                    await asyncio.sleep(3)
+
+                # After joining, warm up cache and collect any remaining access hashes
+                try:
+                    dialogs = await client.get_dialogs(limit=300)
+                    for dlg in dialogs:
+                        entity = getattr(dlg, "entity", None)
+                        if entity:
+                            _update_db_from_chat(entity, db)
+                except Exception:
+                    pass
+
+                if save_db_fn:
+                    save_db_fn(db)
+
+        except Exception as e:
+            log.warning("channel_setup: session %s failed: %s", sess, e)
+            stats["errors"] += 1
+
+        summary[sess] = stats
+
+    return summary

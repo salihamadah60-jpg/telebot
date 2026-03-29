@@ -26,7 +26,12 @@ from database import (
     load_raw_links,
 )
 from account_manager import AccountManager
-from channel_setup import create_archive_channels, add_account_to_channels, add_owner_to_channels
+from channel_setup import (
+    create_archive_channels,
+    add_account_to_channels,
+    add_owner_to_channels,
+    join_accounts_via_invites,
+)
 from harvester import harvest_sources
 from sorter import run_sorter
 from joiner import run_smart_joiner
@@ -472,11 +477,27 @@ async def add_acc_handler(event):
 
             if is_new and db.get("channels"):
                 await conv.send_message("⏳ جاري إضافة الحساب إلى قنوات الأرشيف...")
-                try:
-                    await add_account_to_channels(result, db)
-                    await conv.send_message("✅ تم إضافة الحساب لجميع القنوات كمسؤول.")
-                except Exception as e:
-                    await conv.send_message(f"⚠️ لم يتمكن من إضافته للقنوات تلقائياً:\n{e}")
+                invite_links = db.get("channels_invites", [])
+                if invite_links:
+                    # Use invite links — works even when entity cache is empty
+                    try:
+                        summary = await join_accounts_via_invites([result], invite_links, db, save_db)
+                        s = list(summary.values())[0] if summary else {}
+                        await conv.send_message(
+                            f"✅ تم انضمام الحساب للقنوات عبر روابط الدعوة.\n"
+                            f"انضم: {s.get('joined', 0)} | موجود مسبقاً: {s.get('already', 0)} | أخطاء: {s.get('errors', 0)}"
+                        )
+                    except Exception as e:
+                        await conv.send_message(f"⚠️ فشل الانضمام عبر الروابط:\n{e}")
+                else:
+                    try:
+                        await add_account_to_channels(result, db)
+                        await conv.send_message("✅ تم إضافة الحساب لجميع القنوات كمسؤول.")
+                    except Exception as e:
+                        await conv.send_message(
+                            f"⚠️ لم يتمكن من إضافته للقنوات تلقائياً.\n"
+                            f"💡 استخدم زر **🔗 انضمام عبر روابط دعوة** من قائمة القنوات لإصلاح ذلك."
+                        )
 
             await send_next_step_hint("channels", db)
         else:
@@ -533,12 +554,15 @@ async def make_ch_handler(event):
 
     existing = len(db.get("channels", {}))
     if existing >= 7:
+        has_invites = bool(db.get("channels_invites"))
         await event.respond(
             f"✅ **القنوات السبع موجودة بالفعل!**\n\n"
             + "\n".join(f"• {v}" for v in CHANNEL_KEYS.values())
-            + "\n\n💡 إذا لم تظهر القنوات في حسابك، اضغط الزر أدناه لإضافتك إليها.",
+            + "\n\n💡 إذا لم تستطع الحسابات الوصول للقنوات، استخدم روابط الدعوة للانضمام مباشرة.",
             buttons=[
+                [Button.inline("🔗 انضمام عبر روابط دعوة", b"join_via_invites")],
                 [Button.inline("➕ أضفني للقنوات كمسؤول", b"add_owner_to_ch")],
+                [Button.inline("🔄 إعادة إنشاء القنوات", b"recreate_channels_confirm")],
                 [Button.inline("⏭️ إضافة مصادر ◄", b"add_src")],
                 nav_row(),
             ],
@@ -604,6 +628,170 @@ async def add_owner_to_ch_handler(event):
             f"⚠️ حدث خطأ: {e}",
             buttons=[nav_row()],
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Join via invite links
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bot.on(events.CallbackQuery(data=b"join_via_invites"))
+@owner_only
+async def join_via_invites_handler(event):
+    await event.answer()
+
+    if not db.get("accounts"):
+        await event.respond(
+            "❌ لا يوجد حساب مرتبط. أضف حساباً أولاً.",
+            buttons=[nav_row()],
+        )
+        return
+
+    if not db.get("channels"):
+        await event.respond(
+            "❌ لا توجد قنوات مُنشأة بعد.",
+            buttons=[nav_row()],
+        )
+        return
+
+    stored_invites = db.get("channels_invites", [])
+
+    async with bot.conversation(OWNER_ID, timeout=180) as conv:
+        if stored_invites:
+            await conv.send_message(
+                f"🔗 **روابط الدعوة المحفوظة ({len(stored_invites)}):**\n"
+                + "\n".join(f"• `{l}`" for l in stored_invites)
+                + "\n\nهل تريد استخدام هذه الروابط أم إدخال روابط جديدة؟\n"
+                "أرسل **نعم** للاستخدام، أو أرسل الروابط الجديدة (كل رابط في سطر):",
+                buttons=[nav_row()],
+                parse_mode="md",
+            )
+        else:
+            await conv.send_message(
+                "🔗 **انضمام عبر روابط الدعوة**\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "أرسل روابط دعوة قنوات الأرشيف السبع (كل رابط في سطر):\n"
+                "`https://t.me/+XXXXXXXXXXXX`",
+                buttons=[nav_row()],
+                parse_mode="md",
+            )
+
+        reply = await conv.get_response()
+        text  = reply.text.strip()
+
+        if text.lower() in ("نعم", "yes", "y") and stored_invites:
+            invite_links = stored_invites
+        else:
+            invite_links = [l.strip() for l in text.split("\n") if "t.me/" in l]
+            if not invite_links:
+                await conv.send_message("❌ لم يتم العثور على روابط صالحة. حاول مرة أخرى.")
+                return
+            # Save for future use
+            db["channels_invites"] = invite_links
+            save_db(db)
+
+        accounts = db.get("accounts", [])
+        await conv.send_message(
+            f"⏳ **جاري الانضمام عبر {len(invite_links)} رابط دعوة...**\n"
+            f"الحسابات: {len(accounts)}\n\n"
+            "قد يستغرق هذا بضع دقائق...",
+            parse_mode="md",
+        )
+
+        summary = await join_accounts_via_invites(accounts, invite_links, db, save_db)
+
+        lines = ["✅ **اكتمل الانضمام عبر روابط الدعوة:**\n"]
+        total_joined  = 0
+        total_already = 0
+        total_errors  = 0
+        for sess, s in summary.items():
+            acc_name = sess.split("/")[-1]
+            total_joined  += s.get("joined",  0)
+            total_already += s.get("already", 0)
+            total_errors  += s.get("errors",  0)
+            lines.append(
+                f"• حساب `{acc_name}`: "
+                f"✅ {s.get('joined',0)} انضم | "
+                f"♻️ {s.get('already',0)} موجود | "
+                f"❌ {s.get('errors',0)} خطأ"
+            )
+
+        hashes_found = len(db.get("channels_hashes", {}))
+        lines.append(
+            f"\n📌 هاش الوصول محفوظ لـ **{hashes_found}/7** قناة"
+        )
+
+        await conv.send_message(
+            "\n".join(lines),
+            buttons=[[Button.inline("⏭️ إضافة مصادر ◄", b"add_src")], nav_row()],
+            parse_mode="md",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recreate channels — confirmation + execution
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bot.on(events.CallbackQuery(data=b"recreate_channels_confirm"))
+@admin_only
+async def recreate_channels_confirm_handler(event):
+    await event.answer()
+    await event.respond(
+        "⚠️ **تحذير: إعادة إنشاء القنوات**\n\n"
+        "سيتم:\n"
+        "• حذف معرفات القنوات الحالية من الذاكرة\n"
+        "• إنشاء 7 قنوات أرشيف جديدة\n\n"
+        "⚠️ القنوات القديمة على تيليجرام **لن تُحذف** — فقط تُفقد الصلة بها.\n\n"
+        "هل أنت متأكد؟",
+        buttons=[
+            [Button.inline("✅ نعم، أعد الإنشاء", b"recreate_channels_do")],
+            [Button.inline("❌ إلغاء", b"make_ch")],
+            nav_row(),
+        ],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=b"recreate_channels_do"))
+@admin_only
+async def recreate_channels_do_handler(event):
+    await event.answer("⏳ جاري إعادة الإنشاء...")
+
+    if not db.get("accounts"):
+        await event.respond("❌ لا يوجد حساب مرتبط. أضف حساباً أولاً.", buttons=[nav_row()])
+        return
+
+    # Clear old channel data
+    db["channels"] = {}
+    db.pop("channels_hashes", None)
+    save_db(db)
+
+    await event.respond(
+        "🔄 **جاري إنشاء قنوات الأرشيف السبع من جديد...**\n"
+        + "\n".join(f"🔄 {v}" for v in CHANNEL_KEYS.values()),
+        parse_mode="md",
+    )
+
+    created = await create_archive_channels(db["accounts"][0], db, save_db)
+
+    lines = ["✅ **تم إعادة إنشاء قنوات الأرشيف:**\n"]
+    for key, ch_id in created.items():
+        title  = CHANNEL_KEYS.get(key, key)
+        status = f"✅ `{ch_id}`" if isinstance(ch_id, int) else f"⚠️ {ch_id}"
+        lines.append(f"• {title}: {status}")
+
+    lines.append(
+        "\n💡 **التالي:** استخدم **🔗 انضمام عبر روابط دعوة** لإضافة باقي الحسابات."
+    )
+
+    await event.respond(
+        "\n".join(lines),
+        buttons=[
+            [Button.inline("🔗 انضمام عبر روابط دعوة", b"join_via_invites")],
+            [Button.inline("⏭️ إضافة مصادر ◄", b"add_src")],
+            nav_row(),
+        ],
+        parse_mode="md",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
