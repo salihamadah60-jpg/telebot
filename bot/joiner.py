@@ -48,9 +48,9 @@ class SessionJoinTracker:
 
     def __init__(self, session_path: str):
         self.session_path    = session_path
-        self.burst_count     = 0          # joins done in current burst
-        self.burst_start_ts  = 0.0        # when current burst started
-        self.flood_until_ts  = 0.0        # if FloodWait, don't use until this time
+        self.burst_count     = 0
+        self.burst_start_ts  = 0.0
+        self.flood_until_ts  = 0.0
 
     def is_in_cooldown(self) -> bool:
         now = time.time()
@@ -60,7 +60,6 @@ class SessionJoinTracker:
             elapsed = now - self.burst_start_ts
             if elapsed < JOIN_BURST_COOLDOWN:
                 return True
-            # Cooldown elapsed — reset burst
             self.burst_count    = 0
             self.burst_start_ts = 0.0
         return False
@@ -83,7 +82,40 @@ class SessionJoinTracker:
 
     def record_flood(self, wait_seconds: int):
         self.flood_until_ts = time.time() + wait_seconds
-        self.burst_count    = JOIN_SAFE_BURST  # force cooldown after flood
+        self.burst_count    = JOIN_SAFE_BURST
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Progress bar helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_bar(done: int, total: int) -> str:
+    pct    = int(done / total * 100) if total else 0
+    filled = "▓" * (pct // 10)
+    empty  = "░" * (10 - pct // 10)
+    return f"[{filled}{empty}] {pct}%  ({done}/{total})"
+
+
+def _join_status_text(
+    done: int,
+    total: int,
+    success: int,
+    failed: int,
+    last_line: str,
+    waiting_msg: str = "",
+) -> str:
+    bar = _make_bar(done, total)
+    text = (
+        f"🤝 **الانضمام الذكي — جارٍ...**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{bar}\n"
+        f"✅ نجح: **{success}**  |  ❌ فشل: **{failed}**  |  ⏳ متبقٍ: **{total - done}**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{last_line}"
+    )
+    if waiting_msg:
+        text += f"\n{waiting_msg}"
+    return text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,14 +132,12 @@ async def join_one_link(client: TelegramClient, link: str) -> tuple[bool, str]:
     """
     try:
         if _is_invite_hash(link):
-            # Extract hash from t.me/+HASH or t.me/joinchat/HASH
             if "/+" in link:
                 invite_hash = link.split("/+")[-1].strip("/")
             else:
                 invite_hash = link.split("/joinchat/")[-1].strip("/")
             await client(ImportChatInviteRequest(invite_hash))
         else:
-            # Public username
             entity = await client.get_entity(link)
             await client(JoinChannelRequest(entity))
 
@@ -117,16 +147,16 @@ async def join_one_link(client: TelegramClient, link: str) -> tuple[bool, str]:
         return True, "ℹ️ منضم مسبقاً"
 
     except InviteRequestSentError:
-        return True, "⏳ طلب انضمام أُرسل (يحتاج موافقة)"
+        return True, "⏳ طلب إرسال (يحتاج موافقة)"
 
     except FloodWaitError as e:
         return False, f"⏳ FloodWait: {e.seconds}s"
 
     except ChannelPrivateError:
-        return False, "🔐 القناة/المجموعة خاصة"
+        return False, "🔐 خاص"
 
     except Exception as e:
-        return False, f"❌ خطأ: {e}"
+        return False, f"❌ {type(e).__name__}"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -140,10 +170,6 @@ async def run_smart_joiner(
     db: dict,
     max_joins: int,
 ) -> None:
-    """
-    Join up to `max_joins` links from `links_to_join` across all `accounts`.
-    Rotates sessions automatically, respects cooldowns, catches FloodWait.
-    """
     if not accounts:
         await status_callback("❌ لا توجد حسابات مرتبطة.")
         return
@@ -151,12 +177,10 @@ async def run_smart_joiner(
         await status_callback("❌ لا توجد روابط للانضمام.")
         return
 
-    # Build tracker per session
     trackers: dict[str, SessionJoinTracker] = {
         s: SessionJoinTracker(s) for s in accounts
     }
 
-    # Init join log in db if needed
     if "joined_links" not in db:
         db["joined_links"] = []
 
@@ -165,47 +189,45 @@ async def run_smart_joiner(
     total          = len(pending)
 
     if total == 0:
-        await status_callback("✅ جميع الروابط المحددة تم الانضمام إليها مسبقاً.")
+        await status_callback(
+            f"🤝 **الانضمام الذكي**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ جميع الروابط المحددة تم الانضمام إليها مسبقاً."
+        )
         return
 
-    await status_callback(
-        f"🤝 **بدأ الانضمام الذكي!**\n"
-        f"📋 روابط للانضمام: **{total}**\n"
-        f"👤 حسابات متاحة: **{len(accounts)}**\n"
-        f"🔒 حد آمن لكل جلسة: {JOIN_SAFE_BURST} روابط ثم انتظار {JOIN_BURST_COOLDOWN // 60} دقيقة"
-    )
+    done    = 0
+    success = 0
+    failed  = 0
+    acc_idx = 0
 
-    done     = 0
-    success  = 0
-    failed   = 0
-    acc_idx  = 0
+    await status_callback(_join_status_text(
+        0, total, 0, 0,
+        f"👤 حسابات: {len(accounts)} | 🛡 حد الدفعة: {JOIN_SAFE_BURST} روابط",
+    ))
 
     for link in pending:
-        # Find a non-cooldown session
-        attempts       = 0
-        session        = None
+        attempts = 0
+        session  = None
 
         while attempts < len(accounts) * 2:
             candidate = accounts[acc_idx % len(accounts)]
             tracker   = trackers[candidate]
-
             if not tracker.is_in_cooldown():
                 session = candidate
                 break
-
-            # All sessions may be in cooldown — find the one with shortest wait
             acc_idx = (acc_idx + 1) % len(accounts)
             attempts += 1
 
         if session is None:
-            # All sessions in cooldown — wait for the shortest one
-            min_wait   = min(t.cooldown_remaining() for t in trackers.values())
-            wait_secs  = int(min_wait) + 5
-            await status_callback(
-                f"⏳ جميع الحسابات في فترة تهدئة. انتظار {wait_secs} ثانية..."
-            )
+            min_wait  = min(t.cooldown_remaining() for t in trackers.values())
+            wait_secs = int(min_wait) + 5
+            await status_callback(_join_status_text(
+                done, total, success, failed,
+                f"📍 `{link.split('/')[-1]}`",
+                waiting_msg=f"⏳ جميع الحسابات في تهدئة — انتظار **{wait_secs}** ثانية...",
+            ))
             await asyncio.sleep(wait_secs)
-            # Reset to first non-cooldown session
             session = accounts[0]
             for s, t in trackers.items():
                 if not t.is_in_cooldown():
@@ -214,64 +236,61 @@ async def run_smart_joiner(
 
         tracker = trackers[session]
 
-        # Execute join
         try:
             async with TelegramClient(session, API_ID, API_HASH) as client:
-                me = await client.get_me()
-                acc_label = (me.first_name or "") + (
-                    f" (@{me.username})" if me.username else ""
-                )
                 ok, msg = await join_one_link(client, link)
-
         except FloodWaitError as e:
             tracker.record_flood(e.seconds)
-            await status_callback(
-                f"⚠️ حظر مؤقت على `{session}` — انتظار {e.seconds}s\n"
-                f"سيتم التبديل للحساب التالي."
-            )
             acc_idx = (acc_idx + 1) % len(accounts)
             failed += 1
+            await status_callback(_join_status_text(
+                done, total, success, failed,
+                f"⚠️ FloodWait على الحساب — تبديل...",
+                waiting_msg=f"⏳ انتظار {e.seconds}s",
+            ))
+            await asyncio.sleep(e.seconds)
             continue
         except Exception as e:
-            msg = f"❌ خطأ حاد: {e}"
+            msg = f"❌ {type(e).__name__}"
             ok  = False
 
         done += 1
+        short = link.split("/")[-1] or link
 
         if ok:
             success += 1
             tracker.record_join()
             db["joined_links"].append(link)
             save_db(db)
-            # Rotate session after each burst
             if tracker.burst_count >= JOIN_SAFE_BURST and len(accounts) > 1:
                 acc_idx = (acc_idx + 1) % len(accounts)
-                await status_callback(
-                    f"🔄 الجلسة وصلت لحد الدفعة — تبديل إلى الحساب التالي"
-                )
         else:
             failed += 1
-            # Check if it was a FloodWait message
             if "FloodWait" in msg:
-                wait = int(msg.split(":")[1].strip().replace("s", ""))
-                tracker.record_flood(wait)
-                await asyncio.sleep(wait)
-                acc_idx = (acc_idx + 1) % len(accounts)
+                try:
+                    wait = int(msg.split(":")[1].strip().replace("s", ""))
+                    tracker.record_flood(wait)
+                    await asyncio.sleep(wait)
+                    acc_idx = (acc_idx + 1) % len(accounts)
+                except Exception:
+                    pass
 
-        await status_callback(
-            f"{'✅' if ok else '❌'} [{done}/{total}] `{link}`\n"
-            f"   {msg}\n"
-            f"   👤 الحساب: `{acc_label if ok else session}`"
-        )
+        icon = "✅" if ok else "❌"
+        await status_callback(_join_status_text(
+            done, total, success, failed,
+            f"{icon} `{short}` — {msg}",
+        ))
 
-        # Random delay between joins to appear natural
         if done < total:
             delay = random.uniform(JOIN_DELAY_MIN, JOIN_DELAY_MAX)
             await asyncio.sleep(delay)
 
+    # Final summary
+    bar = _make_bar(total, total)
     await status_callback(
-        f"\n🏁 **اكتمل الانضمام الذكي!**\n"
-        f"✅ ناجح: {success}\n"
-        f"❌ فشل: {failed}\n"
-        f"📊 الإجمالي: {done}/{total}"
+        f"🤝 **الانضمام الذكي — اكتمل!**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{bar}\n"
+        f"✅ نجح: **{success}**  |  ❌ فشل: **{failed}**\n"
+        f"📊 الإجمالي: **{done}/{total}**"
     )

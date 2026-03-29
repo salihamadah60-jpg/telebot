@@ -195,11 +195,12 @@ async def harvest_sources(
         combined = _save_partial()
 
         await status_callback(
-            f"🎉 **اكتمل الحصاد!**\n"
-            f"📦 الإجمالي الكلي: {len(combined):,} رابط\n"
-            f"🆕 تم إضافة: {len(newly_found):,} رابط جديد\n\n"
-            f"💾 جميع الروابط محفوظة في `raw_links.json` — "
-            f"عمليات الحصاد القادمة ستُضاف إليها تلقائياً."
+            f"🌾 **الحصاد — اكتمل ✅**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"[▓▓▓▓▓▓▓▓▓▓] 100%\n"
+            f"📦 الإجمالي: **{len(combined):,}** رابط\n"
+            f"🆕 تم إضافة: **{len(newly_found):,}** رابط جديد\n"
+            f"💾 محفوظة في `raw_links.json`"
         )
         return combined
 

@@ -141,7 +141,18 @@ def make_edit_callback(msg_id: int, chat_id: int, fixed_buttons=None):
 
 
 async def _keep_alive_http():
-    """Minimal HTTP health-check server so autoscale deployment never scales to zero."""
+    """
+    Minimal HTTP health-check server — keeps autoscale deployment alive.
+
+    Replit sets REPLIT_DEPLOYMENT_ID only in the production deployment
+    environment, not in the dev workspace. So we skip the server entirely
+    in development — the dev workspace has the API server on the same port
+    and the keep_alive.sh script already handles bot restarts.
+    """
+    if not os.environ.get("REPLIT_DEPLOYMENT_ID"):
+        print("ℹ️ Dev workspace detected — HTTP health-check server not started.")
+        return
+
     port = int(os.environ.get("PORT", 8080))
 
     async def _handle(reader, writer):
