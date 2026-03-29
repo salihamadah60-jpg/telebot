@@ -710,12 +710,14 @@ async def harvest_handler(event):
         return
 
     existing = get_raw_count()
+    all_sessions = db["accounts"]
     _stop_btn = [[Button.inline("⏹ إيقاف الحصاد", b"stop_harvest")]]
     prog_msg = await event.respond(
-        f"🌾 **الحصاد — جارٍ...**\n"
+        f"🌾 **الحصاد الموزع — جارٍ...**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📋 المصادر: {len(db['sources'])} | 📦 موجود: {existing:,}\n\n"
-        f"⏳ جاري الاتصال بالمصادر...",
+        f"👤 حسابات: **{len(all_sessions)}** | 📋 مصادر: **{len(db['sources'])}**\n"
+        f"📦 روابط موجودة: **{existing:,}**\n\n"
+        f"⏳ جاري الانضمام للمصادر وتوزيع العمل...",
         buttons=_stop_btn,
         parse_mode="md",
     )
@@ -726,7 +728,7 @@ async def harvest_handler(event):
         harvested = await harvest_sources(
             status_callback=prog_cb,
             db=db,
-            session=db["accounts"][0],
+            sessions=all_sessions,
         )
     finally:
         sorter_ctrl.end_harvest()
