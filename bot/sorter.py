@@ -92,7 +92,7 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
                 full = await client(GetFullChannelRequest(entity))
                 bio  = getattr(full.full_chat, "about", "") or ""
             elif isinstance(entity, TLChat):
-                full = await client(GetFullChatRequest(entity))
+                full = await client(GetFullChatRequest(entity.id))
                 bio  = getattr(full.full_chat, "about", "") or ""
         except Exception:
             pass
@@ -390,16 +390,18 @@ async def _account_worker(
     counters: dict,
     skip_entity_ids: set,
     skip_normalized: set,
+    global_sem: asyncio.Semaphore,   # shared across ALL workers — caps total concurrent API calls
 ) -> None:
     """
     Process a subset of links using an already-open client.
     All account workers run in parallel — each owns its slice.
-    On FloodWait: waits (interruptibly) then retries the SAME link.
-    Does NOT touch archive channels (posting is done by the poster worker).
+
+    global_sem limits concurrent API calls across ALL workers combined.
+    On FloodWait: semaphore is released BEFORE sleeping so other workers
+    can keep running. After the sleep the worker retries the same link.
     """
     print(f"worker '{acc_name}': {len(links_subset):,} links")
 
-    # Mark this account as active in the shared flood-status dict
     async with file_lock:
         counters.setdefault("flood_accounts", {})[acc_name] = "🟢"
 
@@ -418,75 +420,81 @@ async def _account_worker(
 
         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
 
-        # Retry loop — only loops when we get a FloodWait on this link
+        # Retry loop — repeats only when a FloodWait is received
         while True:
             if sorter_ctrl.is_stopped():
                 break
-            try:
-                _is_add          = is_addlist_link(link)
-                addlist_children: list[str] = []
 
-                if _is_add:
-                    addlist_children = await expand_addlist(client, link)
-                    if addlist_children:
-                        async with file_lock:
-                            extra_links.extend(addlist_children)
+            flood_secs = None   # set if we get a FloodWait
 
-                info = await get_entity_info(client, link)
+            async with global_sem:   # limit total concurrent API calls
+                try:
+                    _is_add          = is_addlist_link(link)
+                    addlist_children: list[str] = []
 
-                entity_id = getattr(info.get("entity"), "id", None)
-                if entity_id and (entity_id in skip_entity_ids or entity_id == BOT_ID):
-                    await result_queue.put({"link": link, "action": "skip"})
-                    break
+                    if _is_add:
+                        addlist_children = await expand_addlist(client, link)
+                        if addlist_children:
+                            async with file_lock:
+                                extra_links.extend(addlist_children)
 
-                med = (
-                    is_medical(info.get("title", ""), info.get("bio", ""), info.get("username", ""))
-                    if info.get("ok") else True
-                )
-                specialty = (
-                    classify_specialty(info.get("title", ""), info.get("bio", ""), info.get("username", ""))
-                    if info.get("ok") else "—"
-                )
+                    info = await get_entity_info(client, link)
 
-                channel_key = route_to_channel(link, info, _is_add, med)
-                report      = build_report(
-                    link, info, specialty, channel_key,
-                    acc_name, addlist_children or None,
-                )
+                    entity_id = getattr(info.get("entity"), "id", None)
+                    if entity_id and (entity_id in skip_entity_ids or entity_id == BOT_ID):
+                        await result_queue.put({"link": link, "action": "skip"})
+                        break   # done with this link
 
-                await result_queue.put({
-                    "link":        link,
-                    "action":      "post",
-                    "channel_key": channel_key,
-                    "report":      report,
-                })
-                # Mark active again after successful request
-                async with file_lock:
-                    counters.setdefault("flood_accounts", {})[acc_name] = "🟢"
-                break   # move to next link
+                    med = (
+                        is_medical(info.get("title", ""), info.get("bio", ""), info.get("username", ""))
+                        if info.get("ok") else True
+                    )
+                    specialty = (
+                        classify_specialty(info.get("title", ""), info.get("bio", ""), info.get("username", ""))
+                        if info.get("ok") else "—"
+                    )
 
-            except FloodWaitError as e:
-                mins, secs = divmod(e.seconds, 60)
+                    channel_key = route_to_channel(link, info, _is_add, med)
+                    report      = build_report(
+                        link, info, specialty, channel_key,
+                        acc_name, addlist_children or None,
+                    )
+
+                    await result_queue.put({
+                        "link":        link,
+                        "action":      "post",
+                        "channel_key": channel_key,
+                        "report":      report,
+                    })
+                    async with file_lock:
+                        counters.setdefault("flood_accounts", {})[acc_name] = "🟢"
+                    break   # success — move to next link
+
+                except FloodWaitError as e:
+                    flood_secs = e.seconds   # will sleep AFTER releasing semaphore
+
+                except Exception:
+                    await result_queue.put({"link": link, "action": "error"})
+                    break   # done with this link (as error)
+
+            # ── Semaphore released — now sleep for FloodWait if needed ────────
+            if flood_secs is not None:
+                mins, secs = divmod(flood_secs, 60)
                 print(
-                    f"[FloodWait] '{acc_name}': {e.seconds}s ({mins}m{secs:02d}s) — "
-                    f"waiting then retrying link"
+                    f"[FloodWait] '{acc_name}': {flood_secs}s ({mins}m{secs:02d}s) — "
+                    f"sleeping then retrying"
                 )
                 async with file_lock:
                     counters.setdefault("flood_accounts", {})[acc_name] = (
                         f"🔴 {mins}م{secs:02d}ث"
                     )
-                stopped = await _interruptible_sleep(e.seconds)
+                stopped = await _interruptible_sleep(flood_secs)
                 async with file_lock:
                     counters.setdefault("flood_accounts", {})[acc_name] = "🟢"
                 if stopped:
                     return
-                # Loop back → retry the same link with this same account
+                # loop back → retry the same link
 
-            except Exception:
-                await result_queue.put({"link": link, "action": "error"})
-                break
-
-    # Worker finished — remove from flood_accounts
     async with file_lock:
         counters.get("flood_accounts", {}).pop(acc_name, None)
 
@@ -757,6 +765,10 @@ async def run_sorter(
     extra_links: list[str] = []
     counters     = {"done": 0, "errors": 0, "flood_accounts": {}}
     result_queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
+    # Limit concurrent API calls across ALL workers: at most 3 get_entity calls
+    # at the same time regardless of how many accounts are running. This prevents
+    # Telegram from issuing global (API_ID-wide) FloodWaits.
+    global_sem   = asyncio.Semaphore(3)
 
     # ── Progress reporter background task ─────────────────────────────────────
     prog_msg_id  = sorter_ctrl.progress_msg_id
@@ -789,6 +801,7 @@ async def run_sorter(
                 counters       = counters,
                 skip_entity_ids= skip_entity_ids,
                 skip_normalized= skip_normalized,
+                global_sem     = global_sem,
             )
             for i, (client, name) in enumerate(clients_info)
             if subsets[i]
