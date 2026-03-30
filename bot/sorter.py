@@ -31,7 +31,10 @@ from telethon.errors import FloodWaitError, InviteHashExpiredError, InviteHashIn
 from telethon.tl.functions.channels import GetFullChannelRequest, GetChannelsRequest
 from telethon.tl.functions.messages import GetFullChatRequest, CheckChatInviteRequest
 from telethon.tl.functions.chatlists import CheckChatlistInviteRequest
-from telethon.tl.types import PeerChannel, InputChannel
+from telethon.tl.types import (
+    PeerChannel, InputChannel,
+    User as TLUser, Chat as TLChat, Channel as TLChannel,
+)
 
 from classifier import (
     classify_specialty,
@@ -65,12 +68,76 @@ import state as sorter_ctrl
 # Entity inspection
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _get_invite_info(client: TelegramClient, link: str) -> dict | None:
+    """
+    Use CheckChatInviteRequest to pull metadata for a private invite link.
+    Works whether the account is already a member or not, and does NOT join.
+    Returns a partial info-dict on success, None on unrecoverable failure.
+    """
+    m = re.search(r't\.me/(?:\+|joinchat/)([A-Za-z0-9_\-]+)', link)
+    if not m:
+        return None
+    inv_hash = m.group(1)
+    try:
+        result  = await client(CheckChatInviteRequest(inv_hash))
+        entity  = getattr(result, "chat", None)
+        chats   = list(getattr(result, "chats", []))
+        if entity is None and chats:
+            entity = chats[0]
+
+        if entity is not None:
+            title     = getattr(entity, "title", "") or "بدون اسم"
+            username  = getattr(entity, "username", "") or ""
+            members   = getattr(entity, "participants_count", None)
+            is_ch     = getattr(entity, "broadcast", False)
+            is_mg     = getattr(entity, "megagroup", False)
+            link_type = "channel" if is_ch else ("supergroup" if is_mg else "group")
+            joined    = hasattr(result, "chat") and result.chat is not None
+            bio = ""
+            try:
+                if isinstance(entity, TLChannel):
+                    full = await client(GetFullChannelRequest(entity))
+                    bio  = getattr(full.full_chat, "about", "") or ""
+            except Exception:
+                pass
+            return {
+                "ok": True, "title": title, "username": username, "bio": bio,
+                "link_type": link_type, "members": members,
+                "joined": joined, "entity": entity,
+            }
+        else:
+            title     = getattr(result, "title", "") or "بدون اسم"
+            about     = getattr(result, "about", "") or ""
+            members   = getattr(result, "participants_count", None)
+            is_ch     = getattr(result, "broadcast", False)
+            link_type = "channel" if is_ch else "group"
+            return {
+                "ok": True, "title": title, "username": "",
+                "bio": about, "link_type": link_type,
+                "members": members, "joined": False, "entity": None,
+            }
+
+    except (InviteHashExpiredError, InviteHashInvalidError):
+        return {
+            "ok": False, "reason": "رابط الدعوة منتهي أو غير صالح",
+            "link": link, "is_private": True, "entity": None,
+        }
+    except Exception:
+        return None
+
+
 async def get_entity_info(client: TelegramClient, link: str) -> dict:
     try:
         entity = await client.get_entity(link)
     except FloodWaitError:
         raise
     except Exception as e:
+        # For private invite links try CheckChatInviteRequest before giving up —
+        # fetches title/member-count/type without joining.
+        if is_invite_link(link):
+            invite_info = await _get_invite_info(client, link)
+            if invite_info is not None:
+                return invite_info
         return {
             "ok": False,
             "reason": str(e),
@@ -79,16 +146,17 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
             "entity": None,
         }
 
-    from telethon.tl.types import User as TLUser, Chat as TLChat
     is_user = isinstance(entity, TLUser)
 
     title    = getattr(entity, "title", "") or getattr(entity, "first_name", "بدون اسم")
     username = getattr(entity, "username", "") or ""
     bio      = ""
 
+    # Explicit isinstance guards — prevents GetFullChatRequest being called on
+    # a User entity if is_user is ever wrong due to a Telethon edge case.
     if not is_user:
         try:
-            if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+            if isinstance(entity, TLChannel):
                 full = await client(GetFullChannelRequest(entity))
                 bio  = getattr(full.full_chat, "about", "") or ""
             elif isinstance(entity, TLChat):
@@ -149,6 +217,11 @@ def route_to_channel(link: str, info: dict, is_add: bool, is_med: bool = True) -
         return "broken"
 
     entity = info.get("entity")
+
+    # Regular user accounts have no place in medical archives
+    if entity and isinstance(entity, TLUser) and not getattr(entity, "bot", False):
+        return "other"
+
     if entity and is_bot_entity(entity):
         return "bots"
 
