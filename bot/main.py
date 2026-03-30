@@ -154,7 +154,9 @@ async def _keep_alive_http():
     in development — the dev workspace has the API server on the same port
     and the keep_alive.sh script already handles bot restarts.
     """
-    if not os.environ.get("REPLIT_DEPLOYMENT_ID"):
+    is_replit_deploy = bool(os.environ.get("REPLIT_DEPLOYMENT_ID"))
+    is_railway       = bool(os.environ.get("RAILWAY_ENVIRONMENT"))
+    if not is_replit_deploy and not is_railway:
         print("ℹ️ Dev workspace detected — HTTP health-check server not started.")
         return
 

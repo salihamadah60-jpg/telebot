@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python311"]
+
+[phases.install]
+cmds = ["pip install -r bot/requirements.txt"]
+
+[start]
+cmd = "cd bot && bash keep_alive.sh"
