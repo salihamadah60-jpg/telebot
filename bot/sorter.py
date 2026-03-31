@@ -133,25 +133,56 @@ async def _get_invite_info(client: TelegramClient, link: str) -> dict | None:
         return None
 
 
+_MSG_LINK_RE = re.compile(r'^https?://t\.me/([A-Za-z0-9_]+)/(\d+)(?:\?.*)?$')
+
+
 async def get_entity_info(client: TelegramClient, link: str) -> dict:
+    # ── Detect message links (t.me/channel/12345) — resolve the channel only ──
+    msg_match = _MSG_LINK_RE.match(link.strip())
+    lookup = f"https://t.me/{msg_match.group(1)}" if msg_match else link
+
     try:
-        entity = await client.get_entity(link)
+        entity = await client.get_entity(lookup)
     except FloodWaitError:
         raise
     except Exception as e:
-        # For private invite links try CheckChatInviteRequest before giving up —
-        # fetches title/member-count/type without joining.
-        if is_invite_link(link):
-            invite_info = await _get_invite_info(client, link)
-            if invite_info is not None:
-                return invite_info
-        return {
-            "ok": False,
-            "reason": str(e),
-            "link": link,
-            "is_private": is_invite_link(link),
-            "entity": None,
-        }
+        err_str = str(e)
+
+        # ── Disconnected client — attempt one reconnect then retry ─────────────
+        if "disconnected" in err_str.lower() or "Cannot send requests" in err_str:
+            try:
+                await client.connect()
+                entity = await client.get_entity(lookup)
+            except FloodWaitError:
+                raise
+            except Exception as e2:
+                err_str = str(e2)
+                # fall through to normal error handling below
+                if is_invite_link(link):
+                    invite_info = await _get_invite_info(client, link)
+                    if invite_info is not None:
+                        return invite_info
+                return {
+                    "ok": False,
+                    "reason": err_str,
+                    "link": link,
+                    "is_private": is_invite_link(link),
+                    "entity": None,
+                }
+        else:
+            # For private invite links try CheckChatInviteRequest before giving up —
+            # fetches title/member-count/type without joining.
+            if is_invite_link(link):
+                invite_info = await _get_invite_info(client, link)
+                if invite_info is not None:
+                    return invite_info
+            return {
+                "ok": False,
+                "reason": err_str,
+                "link": link,
+                "is_private": is_invite_link(link),
+                "entity": None,
+            }
 
     is_user = isinstance(entity, TLUser)
 
@@ -556,6 +587,9 @@ async def _sequential_inspector(
         link = pending[link_idx]
         norm = normalize_link(link)
         if norm in skip_normalized or norm in seen_set:
+            # Immediately add to seen_set so later duplicates in pending are skipped too
+            async with file_lock:
+                seen_set.add(norm)
             await result_queue.put({"link": link, "action": "skip"})
             link_idx += 1
             continue
@@ -594,6 +628,10 @@ async def _sequential_inspector(
                 link, info, specialty, channel_key,
                 acc_name, addlist_children or None,
             )
+
+            # Mark seen in-memory immediately so duplicates later in pending are skipped
+            async with file_lock:
+                seen_set.add(norm)
 
             await result_queue.put({
                 "link": link, "action": "post",
@@ -865,11 +903,16 @@ async def run_sorter(
     skip_normalized: set = set(source_norm)
 
     # ── Build pending list: from start_from onward, skip already-seen & sources
-    pending = [
-        lnk for lnk in raw_links[start_from:]
-        if normalize_link(lnk) not in seen_set
-        and normalize_link(lnk) not in skip_normalized
-    ]
+    # Also deduplicate within pending itself (preserve first occurrence order)
+    _seen_norms: set = set()
+    pending: list = []
+    for lnk in raw_links[start_from:]:
+        n_ = normalize_link(lnk)
+        if n_ in seen_set or n_ in skip_normalized or n_ in _seen_norms:
+            continue
+        _seen_norms.add(n_)
+        pending.append(lnk)
+    del _seen_norms
     total = len(pending)
 
     if total == 0:
