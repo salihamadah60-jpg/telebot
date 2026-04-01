@@ -43,6 +43,7 @@ SPECIALTIES: dict[str, list[str]] = {
         "smle", "sle", "sdle", "sple", "snle", "sles",
         "scfhs", "هيئة التخصصات", "الهيئة السعودية",
         "mumaris", "ممارس بلس", "mumaris plus",
+        "scfhs prometric", "pastel", "بستل",
         # GCC
         "dha", "haad", "doh", "moh uae", "omsb", "qchp", "nhra", "kmle",
         "دبي", "أبوظبي", "عمان", "قطر", "البحرين", "الكويت",
@@ -50,7 +51,10 @@ SPECIALTIES: dict[str, list[str]] = {
         "usmle", "plab", "ukmla", "mccqe", "amc exam",
         "mrcp", "mrcs", "mrcgp", "mrcpch", "mrcog",
         "frcsc", "frcpc", "facs", "facp",
-        "oet", "ielts", "neet pg",
+        "mrcem", "emrcog", "eMRCOG",
+        "fcps", "FCPS exam",
+        "oet", "ielts", "neet pg", "pte", "PTE academic", "PTE exam",
+        "goethe", "gothe", "goethe zertifikat", "german language exam",
         # System
         "prometric", "برومترك", "dataflow", "داتا فلو",
         "رخصة طبية", "medical license", "تصنيف مهني",
@@ -59,9 +63,19 @@ SPECIALTIES: dict[str, list[str]] = {
         "تجميعات smle", "smle prep", "smle recall", "pass smle",
         "تجميعات", "recalls", "تسريبات", "leaks",
         "بنك أسئلة", "question bank", "qbank", "uworld",
-        "mcq", "osce", "أوسكي", "viva", "فيفا",
+        "mcq", "osce", "أوسكي", "اوسكي", "OSCE", "viva", "فيفا",
         "mock exam", "اختبار تجريبي", "practice test",
-        "board exam", "board review",
+        "board exam", "board review", "board", "بورد",
+        "diploma", "دبلوم", "دبلومة",
+        "candidate", "مرشح", "مرشحين",
+        "study", "مذاكرة", "note", "notes", "ملاحظات",
+        # Months & years
+        "2026", "2025",
+        "january", "february", "march", "april", "may", "june",
+        "july", "august", "september", "october", "november", "december",
+        "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+        "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
+        "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر",
     ],
 
     # ── Residency / Fellowship / Scholarship ──────────────────────────────────
@@ -74,13 +88,18 @@ SPECIALTIES: dict[str, list[str]] = {
         "دراسة في الخارج", "study abroad",
         "قبول برنامج", "program acceptance", "admission",
         "match", "nrmp", "البرنامج السعودي", "بورد سعودي",
-        "saudi board", "arab board", "بورد عربي",
+        "saudi board", "arab board", "بورد عربي", "البورد العربي",
+        "rotation", "روتيشن", "surgery rotation", "جراحة دورة تدريبية",
+        "icu fellowship", "زمالة عناية مركزة", "icu زمالة",
+        "cme", "cme credit", "cme student", "تعليم طبي مستمر",
+        "interns", "طلاب امتياز", "intern medical student",
     ],
 
     # ── Internal Medicine & all sub-specialties ───────────────────────────────
     "باطنة_وتخصصاتها": [
         "باطنة", "باطنية", "internal medicine", "general medicine",
         "طب باطني", "internist",
+        "imd", "imd gl", "قسم الباطنة", "internal medicine department",
         # Cardiology
         "قلب", "cardiology", "cardio", "cardiac",
         "electrophysiology", "ep", "كهرباء القلب",
@@ -236,6 +255,7 @@ SPECIALTIES: dict[str, list[str]] = {
         "أطفال", "pediatrics", "peds", "pedia", "pediatric",
         "طب أطفال عام", "general pediatrics",
         "paediatrics", "paeds",
+        "pem", "PEM", "pediatric emergency medicine", "طوارئ أطفال",
         # Neonatology
         "حديثي الولادة", "neonatology", "neonatal",
         "خدج", "premature", "preterm", "مبتسر",
@@ -558,10 +578,13 @@ SPECIALTIES: dict[str, list[str]] = {
         "عناية مركزة", "icu", "intensive care", "critical care",
         "إنعاش", "resuscitation", "cpr", "acls",
         "ventilator", "تنفس اصطناعي",
-        "طب طوارئ", "emergency medicine", "er", "ed",
+        "طب طوارئ", "emergency medicine", "er", "ed", "ER", "EMERGENCY",
         "emergency room", "trauma bay",
         "مسعف", "paramedic", "emt",
         "prehospital", "إسعاف ميداني",
+        "pem", "PEM", "pediatric emergency medicine", "طوارئ أطفال",
+        "icu fellowship", "زمالة عناية مركزة",
+        "home care", "رعاية منزلية", "home care nursing",
         "pediatric anesthesia", "تخدير أطفال",
         "cardiac anesthesia", "تخدير قلب",
         "neuroanesthesia", "تخدير مخ",
@@ -619,7 +642,7 @@ SPECIALTIES: dict[str, list[str]] = {
         "licensed practical nurse", "lpn",
         "تمريض قلب", "cardiac nursing",
         "تمريض أورام", "oncology nursing",
-        "تمريض عناية مركزة", "critical care nursing",
+        "تمريض عناية مركزة", "critical care nursing", "icu nursing",
         "تمريض طوارئ", "emergency nursing",
         "تمريض أطفال", "pediatric nursing",
         "تمريض نساء وولادة", "obstetric nursing",
@@ -628,6 +651,8 @@ SPECIALTIES: dict[str, list[str]] = {
         "nurse anesthetist", "crna",
         "infection control nurse",
         "nursing education", "تعليم تمريض",
+        "home care nursing", "تمريض منزلي", "home care nurse",
+        "رعاية منزلية", "nursing home care",
         "snle", "اختبار تمريض",
     ],
 
@@ -667,13 +692,23 @@ SPECIALTIES: dict[str, list[str]] = {
 
     # ── Family Medicine & Primary Care ────────────────────────────────────────
     "طب_أسرة_ومجتمع": [
-        "طب أسرة", "family medicine", "fm",
+        "طب أسرة", "family medicine", "fm", "FM",
+        "family medicine hub", "طب أسرة جدة",
         "طب مجتمع", "community medicine",
         "رعاية أولية", "primary care", "primary healthcare",
         "ممارس عام", "general practitioner", "gp",
         "مركز صحي", "health center",
         "chronic disease management",
-        "mrcgp", "family board",
+        "mrcgp", "family board", "MRCGP",
+        # Saudi cities (frequently used for job/group search)
+        "jeddah", "جدة", "khobar", "الخبر", "albaha", "الباحة",
+        "riyadh", "الرياض", "dammam", "الدمام",
+        "mecca", "مكة", "مكة المكرمة", "medina", "المدينة", "المدينة المنورة",
+        "taif", "الطائف", "tabuk", "تبوك", "abha", "أبها",
+        "hail", "حائل", "najran", "نجران", "jazan", "جازان",
+        "buraydah", "بريدة", "hafar", "حفر الباطن",
+        "qassim", "القصيم", "jubail", "الجبيل",
+        "yanbu", "ينبع", "al qunfudah", "القنفذة",
     ],
 
     # ── Preventive Medicine & Public Health ───────────────────────────────────
@@ -763,6 +798,8 @@ SPECIALTIES: dict[str, list[str]] = {
         "specialist", "أخصائي",
         "consultant", "استشاري",
         "medical student", "طالب طب",
+        "student", "طالب", "طلاب",
+        "note", "notes", "ملاحظات", "نوتس",
     ],
 }
 

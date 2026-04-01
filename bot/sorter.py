@@ -47,6 +47,7 @@ from classifier import (
 from database import (
     load_seen_set,
     mark_seen,
+    save_seen_set,
     load_raw_links,
     save_raw_links,
     save_db,
@@ -550,7 +551,13 @@ async def _sequential_inspector(
                 min_wait = remaining
 
         if chosen is None:
-            # All accounts cooling — wait for the earliest to become available
+            # All accounts cooling — save progress to disk before idle wait
+            try:
+                async with file_lock:
+                    save_seen_set(seen_set)
+                    save_db(db)
+            except Exception:
+                pass
             wait_secs = min_wait + 0.5
             m, s = divmod(int(wait_secs), 60)
             print(f"[Rotation] all accounts cooling — idle {m}m{s:02d}s")
@@ -657,6 +664,13 @@ async def _sequential_inspector(
                     f"[CRITICAL FLOOD] '{acc_name}': {flood_secs}s — "
                     f"system pause {pause_secs}s ({pm}m{ps:02d}s)"
                 )
+                # Save progress immediately on critical flood
+                try:
+                    async with file_lock:
+                        save_seen_set(seen_set)
+                        save_db(db)
+                except Exception:
+                    pass
                 if prog_msg_id and prog_chat_id:
                     try:
                         await bot_client.edit_message(

@@ -16,6 +16,7 @@ Our protection strategy:
 """
 
 import asyncio
+import re
 import time
 import random
 from telethon import TelegramClient
@@ -25,7 +26,7 @@ from telethon.errors import (
     InviteRequestSentError,
     ChannelPrivateError,
 )
-from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.channels import JoinChannelRequest, CreateChannelRequest
 from telethon.tl.functions.messages import ImportChatInviteRequest
 
 from config import (
@@ -36,7 +37,155 @@ from config import (
     JOIN_DELAY_MIN,
     JOIN_DELAY_MAX,
 )
-from database import save_db
+from database import save_db, load_raw_links, save_raw_links
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Link-detection regexes for post-join scanning
+# ─────────────────────────────────────────────────────────────────────────────
+
+_TG_LINK_RE = re.compile(
+    r"(?:https?://)?t\.me/(?:joinchat/|\+)?[A-Za-z0-9_\-/]+",
+    re.IGNORECASE,
+)
+_WA_LINK_RE = re.compile(
+    r"(?:https?://)?(?:chat\.whatsapp\.com|wa\.me)/[A-Za-z0-9_\-]+",
+    re.IGNORECASE,
+)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Post-join link scanning  ★ NEW (Task 5)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Discovery channel specs: db key → (title, description)
+_DISCOVERY_CHANNELS: dict[str, tuple[str, str]] = {
+    "tg_discovery": (
+        "روابط تلجرام مكتشفة جديدة",
+        "روابط مجموعات وقنوات تيليجرام الطبية المكتشفة تلقائياً",
+    ),
+    "wa_discovery": (
+        "روابط واتساب مكتشفة",
+        "روابط مجموعات واتساب الطبية المكتشفة تلقائياً",
+    ),
+}
+
+
+async def _get_or_create_discovery_channel(
+    client: TelegramClient,
+    db: dict,
+    channel_key: str,
+) -> int | None:
+    """
+    Return the channel id for a discovery channel.
+    Creates it on first call and stores the id in db["discovery_channels"].
+    Returns None on failure.
+    """
+    db.setdefault("discovery_channels", {})
+    if channel_key in db["discovery_channels"]:
+        return db["discovery_channels"][channel_key]
+
+    if channel_key not in _DISCOVERY_CHANNELS:
+        return None
+
+    title, about = _DISCOVERY_CHANNELS[channel_key]
+    try:
+        result = await client(
+            CreateChannelRequest(
+                title=title,
+                about=about,
+                megagroup=False,  # broadcast channel
+            )
+        )
+        ch_id = result.chats[0].id
+        db["discovery_channels"][channel_key] = ch_id
+        save_db(db)
+        return ch_id
+    except Exception:
+        return None
+
+
+async def _scan_joined_for_new_links(
+    client: TelegramClient,
+    joined_entity,
+    db: dict,
+    status_callback,
+    scan_limit: int = 50,
+) -> None:
+    """
+    Scan the last `scan_limit` messages of a newly-joined chat for:
+      • Telegram links  → added to raw_links.json for the normal pipeline
+      • WhatsApp links  → posted to on-demand wa_discovery channel
+    TG links are also appended raw_links.json for the sorter to classify later.
+    """
+    try:
+        messages = await client.get_messages(joined_entity, limit=scan_limit)
+    except Exception:
+        return
+
+    existing_raw = set(load_raw_links())
+    new_tg: list[str] = []
+    new_wa: list[str] = []
+
+    for msg in messages:
+        text = (msg.text or "") + " " + (msg.message or "")
+        for m in _TG_LINK_RE.findall(text):
+            link = m.strip().rstrip("/")
+            if not link.startswith("http"):
+                link = "https://" + link
+            if link not in existing_raw:
+                new_tg.append(link)
+                existing_raw.add(link)
+        for m in _WA_LINK_RE.findall(text):
+            link = m.strip().rstrip("/")
+            if not link.startswith("http"):
+                link = "https://" + link
+            if link not in new_wa:
+                new_wa.append(link)
+
+    # ── Save newly found TG links to raw pipeline ─────────────────────────────
+    if new_tg:
+        combined = load_raw_links() + new_tg
+        save_raw_links(combined)
+        await status_callback(
+            f"📡 **مسح ما بعد الانضمام:** {len(new_tg)} رابط تيليجرام جديد أُضيف للمعالجة"
+        )
+
+    # ── Post WA links to on-demand discovery channel ──────────────────────────
+    if new_wa:
+        ch_id = await _get_or_create_discovery_channel(client, db, "wa_discovery")
+        if ch_id:
+            try:
+                wa_text = (
+                    "📱 **روابط واتساب مكتشفة جديدة**\n\n"
+                    + "\n".join(f"• {l}" for l in new_wa[:30])
+                    + (f"\n…و{len(new_wa) - 30} رابط إضافي" if len(new_wa) > 30 else "")
+                )
+                await client.send_message(ch_id, wa_text)
+            except Exception:
+                pass
+        await status_callback(
+            f"💬 **واتساب:** {len(new_wa)} رابط اكتُشف → أُرسل للقناة المخصصة"
+        )
+
+
+async def _resolve_link_entity(client: TelegramClient, link: str):
+    """
+    Try to resolve a Telegram link to an entity for message scanning.
+    Returns the entity or None for invite/joinchat links we cannot resolve.
+    """
+    # Only resolve public username-based links (t.me/username)
+    # Skip invite hashes (t.me/joinchat/..., t.me/+...)
+    m = re.match(
+        r"(?:https?://)?t\.me/([A-Za-z0-9_]{5,})\s*$",
+        link.strip(),
+    )
+    if not m:
+        return None
+    username = m.group(1)
+    try:
+        return await client.get_entity(username)
+    except Exception:
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,6 +374,15 @@ async def _account_join_worker(
                     ))
 
                 if ok:
+                    # ── Post-join scan for TG/WA links ★ NEW ─────────────────
+                    try:
+                        entity = await _resolve_link_entity(client, link)
+                        if entity is not None:
+                            await _scan_joined_for_new_links(
+                                client, entity, db, status_callback
+                            )
+                    except Exception:
+                        pass
                     await asyncio.sleep(random.uniform(JOIN_DELAY_MIN, JOIN_DELAY_MAX))
                 else:
                     await asyncio.sleep(3)

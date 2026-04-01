@@ -36,6 +36,7 @@ All discovered links are:
 """
 
 import asyncio
+import itertools
 import os
 import random
 import re
@@ -315,6 +316,85 @@ SEARCH_QUERIES: list[str] = [
     "smle bot", "pharmacy bot",
     "lab bot", "بوت تيليجرام طبي",
     "qbank bot", "mcq bot",
+
+    # ── New additions ─────────────────────────────────────────────────────────
+    # Emergency & critical care
+    "ER", "emergency room", "EMERGENCY", "طوارئ ER",
+    "PEM", "pediatric emergency", "طوارئ أطفال",
+    "ICU fellowship", "زمالة عناية مركزة", "icu زمالة",
+    # Exams & certifications
+    "MRCEM", "mrcem exam", "mrcem recall",
+    "eMRCOG", "emrcog exam",
+    "FCPS", "fcps exam", "fcps recall",
+    "PASTEL", "pastel platform", "pastel saudi",
+    "PTE", "PTE academic", "PTE medical",
+    "Goethe", "goethe exam", "goethe zertifikat",
+    "diploma", "دبلوم", "دبلومة طبية",
+    "board", "بورد", "البورد العربي", "arab board",
+    # Months & Year
+    "2026 exam", "2026 board",
+    "may 2026", "june 2026", "july 2026", "august 2026",
+    "january 2026", "february 2026", "march 2026",
+    "مايو 2026", "يونيو 2026", "يوليو 2026",
+    # Rotations & training
+    "rotation", "روتيشن", "surgery rotation", "جراحة دورة",
+    "CME", "cme credit", "cme student", "تعليم مستمر",
+    "intern rotation", "residency rotation",
+    # IMD / Internal Medicine Dept
+    "IMD", "imd gl", "قسم الباطنة", "internal medicine department",
+    # Nursing & home care
+    "home care nursing", "تمريض منزلي",
+    "home care nurse", "رعاية منزلية",
+    "ICU nursing", "تمريض عناية مركزة",
+    # Imaging & radiology
+    "imaging", "تصوير طبي", "medical imaging",
+    # Orthopedic / endodontics
+    "orthopedic", "عظام", "Orthopedic KSA",
+    "endodontics", "علاج جذور", "root canal",
+    # OBGYN & fetal
+    "obgyn", "ob gyn", "نساء وولادة",
+    "fetal medicine", "طب الأجنة",
+    # Hematology & oncology
+    "hematology", "أمراض الدم", "hema",
+    # Family medicine
+    "FM", "family medicine", "طب أسرة",
+    "family medicine hub", "MRCGP",
+    # Saudi cities
+    "jeddah", "جدة", "khobar", "الخبر", "albaha", "الباحة",
+    "riyadh", "الرياض", "dammam", "الدمام",
+    "abha", "أبها", "taif", "الطائف", "tabuk", "تبوك",
+    # Study & candidates
+    "candidate", "مرشح", "مرشحين",
+    "study group medical", "قروب مذاكرة",
+    # Psychiatry & OSCE
+    "psychiatry", "نفسية", "mental health",
+    "OSCE", "أوسكي", "اوسكي", "osce prep",
+    # SCFHS Prometric
+    "SCFHS Prometric", "scfhs prometric", "برومترك الهيئة",
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SEED keywords — curated subset used for progressive combination search
+# (pairs → triples → quads → quintuples). Kept small to avoid explosion.
+# ─────────────────────────────────────────────────────────────────────────────
+
+SEED_KEYWORDS: list[str] = [
+    # Exams
+    "SMLE", "MRCP", "MRCGP", "MRCEM", "PLAB", "USMLE", "FCPS", "OSCE",
+    "DHA", "HAAD", "DOH", "OMSB", "QCHP", "NHRA", "SCFHS", "Prometric",
+    # Specialties
+    "Internal Medicine", "Surgery", "Pediatrics", "Obstetrics", "Gynecology",
+    "Emergency", "ICU", "Radiology", "Psychiatry", "Nursing",
+    "Family Medicine", "Orthopedic", "Cardiology", "Neurology", "Oncology",
+    "Hematology", "ENT", "Ophthalmology", "Dermatology", "Anesthesia",
+    # Training
+    "Residency", "Fellowship", "Rotation", "Internship", "Board",
+    # Arabic
+    "باطنة", "جراحة", "أطفال", "نساء", "طوارئ", "تمريض", "أشعة", "بورد",
+    # Cities
+    "Jeddah", "Riyadh", "KSA", "Saudi", "UAE",
+    # Year
+    "2026",
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -916,6 +996,184 @@ async def filter_scam_links(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Progressive Keyword Search  ★ NEW (Task 4)
+#
+# Phase 1 — single keywords: searches every keyword in SEARCH_QUERIES one by one.
+# Phase 2 — pairs:           every combination of 2 keywords from SEED_KEYWORDS.
+# Phase 3 — triples:         every combination of 3 keywords from SEED_KEYWORDS.
+# Phase 4 — quads:           every combination of 4 keywords from SEED_KEYWORDS.
+# Phase 5 — quintuples:      every combination of 5 keywords from SEED_KEYWORDS.
+#
+# Each combination is joined with a space and searched as a single query.
+# A _search_stopped flag allows any phase to be interrupted at any time.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_search_stopped: bool = False
+
+
+def stop_progressive_search():
+    global _search_stopped
+    _search_stopped = True
+
+
+def reset_progressive_search():
+    global _search_stopped
+    _search_stopped = False
+
+
+def _combo_generator(keywords: list[str], size: int):
+    """Yield joined keyword combinations of the given size."""
+    for combo in itertools.combinations(keywords, size):
+        yield " ".join(combo)
+
+
+async def _run_single_phase(
+    client: TelegramClient,
+    queries: list[str],
+    known: set,
+    status_cb: Callable,
+    phase_label: str,
+    limit_per_query: int = 20,
+) -> list[str]:
+    """Search a list of queries one-by-one. Returns list of new links found."""
+    global _search_stopped
+    found: list[str] = []
+    total = len(queries)
+
+    for i, query in enumerate(queries):
+        if _search_stopped:
+            break
+        if len(query.strip()) < 3:
+            continue
+        try:
+            result = await client(SearchRequest(q=query, limit=limit_per_query))
+            for chat in result.chats:
+                link = _entity_to_link(chat)
+                if link and _is_new_link(link, known):
+                    found.append(link)
+                    known.add(link.lower())
+        except FloodWaitError as e:
+            await status_cb(f"⏳ {phase_label}: انتظار {e.seconds}s بسبب FloodWait...")
+            await _safe_sleep(e.seconds)
+        except Exception:
+            pass
+
+        if i % 30 == 29:
+            await status_cb(
+                f"🔍 {phase_label}: {i + 1}/{total} — اكتُشف {len(found)} رابط جديد"
+            )
+            await _safe_sleep(random.uniform(2.0, 4.0))
+        else:
+            await _safe_sleep(random.uniform(0.7, 1.8))
+
+    return found
+
+
+async def run_progressive_keyword_search(
+    client: TelegramClient,
+    known: set,
+    status_cb: Callable,
+    max_combo_queries: int = 500,
+    limit_per_query: int = 20,
+) -> list[str]:
+    """
+    Progressive keyword search across 5 phases:
+      Phase 1: Every keyword in SEARCH_QUERIES individually.
+      Phase 2: All pairs from SEED_KEYWORDS.
+      Phase 3: Triples from SEED_KEYWORDS (capped at max_combo_queries).
+      Phase 4: 4-combinations (capped at max_combo_queries).
+      Phase 5: 5-combinations (capped at max_combo_queries).
+    """
+    global _search_stopped
+    reset_progressive_search()
+    all_found: list[str] = []
+
+    # ── Phase 1: Single keywords ──────────────────────────────────────────────
+    await status_cb(
+        f"🔍 **البحث التصاعدي — المرحلة 1:** كلمات مفردة\n"
+        f"({len(SEARCH_QUERIES)} كلمة بحثية)"
+    )
+    p1 = await _run_single_phase(
+        client, SEARCH_QUERIES, known, status_cb, "المرحلة 1",
+        limit_per_query=limit_per_query,
+    )
+    all_found.extend(p1)
+    await status_cb(f"✅ المرحلة 1 اكتملت: {len(p1)} رابط جديد")
+    if _search_stopped:
+        return all_found
+
+    # ── Phase 2: Pairs ────────────────────────────────────────────────────────
+    pairs = list(_combo_generator(SEED_KEYWORDS, 2))
+    await status_cb(
+        f"🔍 **المرحلة 2:** تركيبات ثنائية\n"
+        f"({len(pairs)} تركيبة من {len(SEED_KEYWORDS)} كلمة محورية)"
+    )
+    p2 = await _run_single_phase(
+        client, pairs, known, status_cb, "المرحلة 2",
+        limit_per_query=limit_per_query,
+    )
+    all_found.extend(p2)
+    await status_cb(f"✅ المرحلة 2 اكتملت: {len(p2)} رابط جديد")
+    if _search_stopped:
+        return all_found
+
+    # ── Phase 3: Triples ──────────────────────────────────────────────────────
+    triples_gen = _combo_generator(SEED_KEYWORDS, 3)
+    triples = list(itertools.islice(triples_gen, max_combo_queries))
+    random.shuffle(triples)
+    await status_cb(
+        f"🔍 **المرحلة 3:** تركيبات ثلاثية\n"
+        f"({len(triples)} تركيبة — محدودة بـ {max_combo_queries})"
+    )
+    p3 = await _run_single_phase(
+        client, triples, known, status_cb, "المرحلة 3",
+        limit_per_query=limit_per_query,
+    )
+    all_found.extend(p3)
+    await status_cb(f"✅ المرحلة 3 اكتملت: {len(p3)} رابط جديد")
+    if _search_stopped:
+        return all_found
+
+    # ── Phase 4: Quads ────────────────────────────────────────────────────────
+    quads_gen = _combo_generator(SEED_KEYWORDS, 4)
+    quads = list(itertools.islice(quads_gen, max_combo_queries))
+    random.shuffle(quads)
+    await status_cb(
+        f"🔍 **المرحلة 4:** تركيبات رباعية\n"
+        f"({len(quads)} تركيبة — محدودة بـ {max_combo_queries})"
+    )
+    p4 = await _run_single_phase(
+        client, quads, known, status_cb, "المرحلة 4",
+        limit_per_query=limit_per_query,
+    )
+    all_found.extend(p4)
+    await status_cb(f"✅ المرحلة 4 اكتملت: {len(p4)} رابط جديد")
+    if _search_stopped:
+        return all_found
+
+    # ── Phase 5: Quintuples ───────────────────────────────────────────────────
+    quints_gen = _combo_generator(SEED_KEYWORDS, 5)
+    quints = list(itertools.islice(quints_gen, max_combo_queries))
+    random.shuffle(quints)
+    await status_cb(
+        f"🔍 **المرحلة 5:** تركيبات خماسية\n"
+        f"({len(quints)} تركيبة — محدودة بـ {max_combo_queries})"
+    )
+    p5 = await _run_single_phase(
+        client, quints, known, status_cb, "المرحلة 5",
+        limit_per_query=limit_per_query,
+    )
+    all_found.extend(p5)
+    await status_cb(
+        f"✅ **البحث التصاعدي اكتمل!**\n"
+        f"المرحلة 1: {len(p1)} | المرحلة 2: {len(p2)} | المرحلة 3: {len(p3)}\n"
+        f"المرحلة 4: {len(p4)} | المرحلة 5: {len(p5)}\n"
+        f"**المجموع: {len(all_found)} رابط جديد**"
+    )
+    return all_found
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main discovery runner
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -939,15 +1197,15 @@ async def run_smart_discovery(
 
     await status_callback(
         "🧠 **بدأ الاكتشاف الذكي المحسّن!**\n\n"
-        "1️⃣  بحث بكلمات مفتاحية (100+ كلمة)\n"
+        "1️⃣  بحث تصاعدي (مفردة → ثنائي → ثلاثي → رباعي → خماسي) 🆕\n"
         "2️⃣  قنوات مشابهة (Telegram AI)\n"
         "3️⃣  روابط من البيو\n"
         "4️⃣  روابط من الرسائل\n"
         "5️⃣  أنماط اسم المستخدم (GCC)\n"
-        "6️⃣  مصفوفة الاستعلامات المركبة  🆕\n"
-        "7️⃣  بحث بالهاشتاقات الطبية  🆕\n"
-        "8️⃣  Google Dorks (site:t.me)  🆕\n"
-        "🔒  فلتر احتيال تلقائي  🆕"
+        "6️⃣  مصفوفة الاستعلامات المركبة\n"
+        "7️⃣  بحث بالهاشتاقات الطبية\n"
+        "8️⃣  Google Dorks (site:t.me)\n"
+        "🔒  فلتر احتيال تلقائي"
     )
 
     session = accounts[0]
@@ -962,9 +1220,14 @@ async def run_smart_discovery(
 
     async with TelegramClient(session, API_ID, API_HASH) as client:
 
-        # ── Method 1: Keyword Search ──────────────────────────────────────────
-        await status_callback("🔍 **الطريقة 1:** بحث بأكثر من 100 كلمة مفتاحية...")
-        m1 = await search_by_keywords(client, known, status_callback)
+        # ── Method 1: Progressive Keyword Search (★ replaces old single-phase) ─
+        await status_callback(
+            "🔍 **الطريقة 1:** بحث تصاعدي تلقائي بجميع الكلمات المفتاحية..."
+        )
+        m1 = await run_progressive_keyword_search(
+            client, known, status_callback,
+            max_combo_queries=500, limit_per_query=20,
+        )
         all_found.extend(m1)
         await status_callback(f"✅ الطريقة 1 اكتملت: {len(m1)} رابط جديد")
 
