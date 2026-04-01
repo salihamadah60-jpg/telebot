@@ -906,9 +906,12 @@ async def run_sorter(
         return
 
     # ── Load seen set into memory (O(1) lookups instead of O(n) file reads) ───
-    # Seed seen_set from EVERY known source so no link is ever re-archived.
-    from database import load_all_known_links
-    seen_set = load_all_known_links(joined_links=db.get("joined_links", []))
+    # IMPORTANT: Only load already-ARCHIVED links (global_seen.txt) + joined links.
+    # Do NOT include raw_links.json here — those are the INPUT to the sorter.
+    # Including raw_links in seen_set would cause every link to be skipped (0% bug).
+    seen_set = load_seen_set()
+    for lnk in db.get("joined_links", []):
+        seen_set.add(normalize_link(lnk))
 
     # ── Build exclusion sets: source links, archive channel IDs ───────────────
     # Normalized source links (t.me/... as-is)

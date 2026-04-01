@@ -885,37 +885,42 @@ async def add_src_handler(event):
 
     current = len(db.get("sources", []))
 
-    async with bot.conversation(event.sender_id, timeout=180) as conv:
-        await conv.send_message(
-            f"**③  إضافة مصادر الروابط**\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"المصادر الحالية: **{current}**\n\n"
-            f"📋 أرسل روابط مجموعات تيليجرام (كل رابط في سطر):\n"
-            f"`https://t.me/medical_links_group`\n"
-            f"`https://t.me/+AbCdEfGh1234`",
-            buttons=[nav_row(b"make_ch")],
-            parse_mode="md",
-        )
-        links_msg   = await conv.get_response()
-        new_sources = [l.strip() for l in links_msg.text.strip().split("\n") if l.strip()]
+    try:
+        async with bot.conversation(event.sender_id, timeout=180) as conv:
+            await conv.send_message(
+                f"**③  إضافة مصادر الروابط**\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"المصادر الحالية: **{current}**\n\n"
+                f"📋 أرسل روابط مجموعات تيليجرام (كل رابط في سطر):\n"
+                f"`https://t.me/medical_links_group`\n"
+                f"`https://t.me/+AbCdEfGh1234`",
+                buttons=[nav_row(b"make_ch")],
+                parse_mode="md",
+            )
+            links_msg   = await conv.get_response()
+            new_sources = [l.strip() for l in links_msg.text.strip().split("\n") if l.strip()]
 
-        added = 0
-        for src in new_sources:
-            if src not in db["sources"]:
-                db["sources"].append(src)
-                added += 1
-        save_db(db)
+            added = 0
+            for src in new_sources:
+                if src not in db["sources"]:
+                    db["sources"].append(src)
+                    added += 1
+            save_db(db)
 
-        await conv.send_message(
-            f"✅ **تمت إضافة {added} مصدر جديد.**\n"
-            f"📋 إجمالي المصادر: **{len(db['sources'])}**",
-            buttons=[
-                [Button.inline("✏️ إضافة المزيد", b"add_src")],
-                [Button.inline("⏭️ بدء الحصاد ◄",  b"harvest")],
-                nav_row(b"make_ch"),
-            ],
-            parse_mode="md",
-        )
+            await conv.send_message(
+                f"✅ **تمت إضافة {added} مصدر جديد.**\n"
+                f"📋 إجمالي المصادر: **{len(db['sources'])}**",
+                buttons=[
+                    [Button.inline("✏️ إضافة المزيد", b"add_src")],
+                    [Button.inline("⏭️ بدء الحصاد ◄",  b"harvest")],
+                    nav_row(b"make_ch"),
+                ],
+                parse_mode="md",
+            )
+    except asyncio.TimeoutError:
+        pass
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1320,31 +1325,40 @@ async def _ask_join_count_and_start(event, source_key: str):
     await event.answer()
     channel_label = CHANNEL_KEYS.get(source_key, source_key)
 
-    async with bot.conversation(event.sender_id, timeout=120) as conv:
-        await conv.send_message(
-            f"✅ المصدر: **{channel_label}**\n\n"
-            f"📊 كم رابطاً تريد الانضمام إليه؟ (مثال: `20`)",
-            buttons=[nav_row(b"smart_join")],
-            parse_mode="md",
-        )
-        count_msg = await conv.get_response()
-
-        try:
-            max_joins = int(count_msg.text.strip())
-            if max_joins <= 0:
-                raise ValueError
-        except ValueError:
+    max_joins = None
+    try:
+        async with bot.conversation(event.sender_id, timeout=120) as conv:
             await conv.send_message(
-                "❌ رقم غير صحيح. تم الإلغاء.",
-                buttons=[[Button.inline("🔄 حاول مرة أخرى", b"smart_join")], nav_row()],
+                f"✅ المصدر: **{channel_label}**\n\n"
+                f"📊 كم رابطاً تريد الانضمام إليه؟ (مثال: `20`)",
+                buttons=[nav_row(b"smart_join")],
+                parse_mode="md",
             )
-            return
+            count_msg = await conv.get_response()
 
-        await conv.send_message(
-            f"⏳ سيبدأ الانضمام إلى **{max_joins}** رابط من **{channel_label}**\n"
-            f"🛡 نظام الحماية الذكي مفعّل (دفعات متقطعة).",
-            parse_mode="md",
-        )
+            try:
+                max_joins = int(count_msg.text.strip())
+                if max_joins <= 0:
+                    raise ValueError
+            except ValueError:
+                await conv.send_message(
+                    "❌ رقم غير صحيح. تم الإلغاء.",
+                    buttons=[[Button.inline("🔄 حاول مرة أخرى", b"smart_join")], nav_row()],
+                )
+                return
+
+            await conv.send_message(
+                f"⏳ سيبدأ الانضمام إلى **{max_joins}** رابط من **{channel_label}**\n"
+                f"🛡 نظام الحماية الذكي مفعّل (دفعات متقطعة).",
+                parse_mode="md",
+            )
+    except asyncio.TimeoutError:
+        return
+    except Exception:
+        return
+
+    if max_joins is None:
+        return
 
     source_ch_id = db["channels"].get(source_key)
     links_to_join = []
@@ -1352,6 +1366,10 @@ async def _ask_join_count_and_start(event, source_key: str):
     if source_ch_id:
         try:
             async with TelegramClient(db["accounts"][0], API_ID, API_HASH) as client:
+                # Guard: skip session if not authorized (prevents EOFError in daemon)
+                if not await client.is_user_authorized():
+                    await status_msg("❌ الجلسة الأولى غير مصرح بها. أعد ربط الحساب.")
+                    return
                 async for msg in client.iter_messages(int(source_ch_id), limit=500):
                     if msg.text:
                         found = re.findall(r"https?://t\.me/[\+a-zA-Z0-9_/]+", msg.text)
@@ -1361,6 +1379,9 @@ async def _ask_join_count_and_start(event, source_key: str):
                                 links_to_join.append(lnk)
                         if len(links_to_join) >= max_joins * 3:
                             break
+        except EOFError:
+            await status_msg("❌ خطأ EOF في الجلسة — الجلسة تحتاج إعادة مصادقة.")
+            return
         except Exception as e:
             await status_msg(f"❌ خطأ في قراءة روابط القناة: {e}")
 

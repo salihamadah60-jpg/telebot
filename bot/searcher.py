@@ -1406,7 +1406,21 @@ async def run_smart_discovery(
     ]
     seed_links = source_links + archive_links
 
-    async with TelegramClient(session, API_ID, API_HASH) as client:
+    try:
+      async with TelegramClient(session, API_ID, API_HASH) as client:
+
+        # Guard: skip if session is not authorized (prevents EOFError in daemon env)
+        try:
+            authorized = await client.is_user_authorized()
+        except Exception:
+            authorized = False
+
+        if not authorized:
+            await status_callback(
+                "❌ جلسة المستخدم غير مصرح بها أو منتهية الصلاحية.\n"
+                "🔑 أعد ربط الحساب من قائمة الحسابات."
+            )
+            return 0
 
         # ── Method 1: Progressive Keyword Search (★ replaces old single-phase) ─
         await status_callback(
@@ -1466,6 +1480,16 @@ async def run_smart_discovery(
                     "\n".join(f"  • {l}" for l in flagged[:5]) +
                     ("\n  ..." if len(flagged) > 5 else "")
                 )
+
+    except EOFError:
+        await status_callback(
+            "❌ خطأ EOF — جلسة المستخدم منتهية أو غير مصادقة.\n"
+            "🔑 أعد ربط الحساب من قائمة الحسابات."
+        )
+        return 0
+    except Exception as _disc_err:
+        await status_callback(f"❌ خطأ في الاكتشاف: {_disc_err}")
+        return 0
 
     # ── Method 8: Google Dorks (no client needed) ★ ──────────────────────────
     m8 = await search_by_google_dorks(known, status_callback)
