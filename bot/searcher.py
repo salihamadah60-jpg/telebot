@@ -63,6 +63,78 @@ from database import load_raw_links, save_raw_links, is_seen
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Saudi Arabia — cities, regions, and national identifiers
+# These are used both as standalone search terms AND as anchors in every
+# combination phase (ثنائي / ثلاثي / رباعي / خماسي).
+# ─────────────────────────────────────────────────────────────────────────────
+
+SAUDI_KEYWORDS: list[str] = [
+    # Country-level identifiers
+    "Saudi Arabia", "Saudi", "KSA", "المملكة العربية السعودية",
+    "المملكة", "السعودية", "سعودي", "طبي سعودي",
+    "وزارة الصحة", "MOH KSA", "Ministry of Health Saudi",
+    "SCFHS", "هيئة التخصصات الصحية", "ممارس بلس",
+    "Saudi Board", "البورد السعودي",
+
+    # Major cities — English
+    "Riyadh", "Jeddah", "Dammam", "Khobar", "Dhahran",
+    "Mecca", "Medina", "Taif", "Tabuk", "Abha",
+    "Hail", "Najran", "Jazan", "Buraydah", "Onaizah",
+    "Qassim", "Jubail", "Yanbu", "Khamis Mushait",
+    "Al Khobar", "Hafar Al Batin", "Al Ahsa",
+    "Al Qunfudah", "Al Baha", "Albaha",
+    "Arar", "Sakaka", "Wajh", "Umluj",
+    "Majmaah", "Zulfi", "Qatif", "Saihat",
+
+    # Major cities — Arabic
+    "الرياض", "جدة", "الدمام", "الخبر", "الظهران",
+    "مكة", "مكة المكرمة", "المدينة", "المدينة المنورة",
+    "الطائف", "تبوك", "أبها", "حائل", "نجران",
+    "جازان", "بريدة", "عنيزة", "القصيم",
+    "الجبيل", "ينبع", "خميس مشيط",
+    "حفر الباطن", "الأحساء", "القنفذة",
+    "الباحة", "عرعر", "سكاكا", "الوجه",
+    "المجمعة", "الزلفي", "القطيف", "سيهات",
+
+    # Regions
+    "المنطقة الغربية", "المنطقة الشرقية", "المنطقة الوسطى",
+    "Western Region", "Eastern Province", "Central Region",
+    "منطقة الرياض", "منطقة مكة", "منطقة المدينة",
+    "منطقة عسير", "منطقة جازان", "منطقة نجران",
+    "منطقة الجوف", "منطقة حائل", "منطقة القصيم",
+    "منطقة الحدود الشمالية", "منطقة تبوك",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Medical-only seeds — pure specialty / exam / training terms (no geography).
+# Combined with SAUDI_KEYWORDS in every anchored combination phase.
+# ─────────────────────────────────────────────────────────────────────────────
+
+MEDICAL_SEED_KEYWORDS: list[str] = [
+    # Exams
+    "SMLE", "MRCP", "MRCGP", "MRCEM", "PLAB", "USMLE", "FCPS", "OSCE",
+    "DHA", "HAAD", "DOH", "OMSB", "QCHP", "NHRA", "Prometric",
+    # Specialties EN
+    "Internal Medicine", "Surgery", "Pediatrics", "Obstetrics", "Gynecology",
+    "Emergency Medicine", "ICU", "Radiology", "Psychiatry", "Nursing",
+    "Family Medicine", "Orthopedic", "Cardiology", "Neurology", "Oncology",
+    "Hematology", "ENT", "Ophthalmology", "Dermatology", "Anesthesia",
+    # Specialties AR
+    "باطنة", "جراحة", "أطفال", "نساء", "طوارئ", "تمريض",
+    "أشعة", "نفسية", "عيون", "أسنان", "صيدلة",
+    # Training & jobs
+    "Residency", "Fellowship", "Rotation", "Board", "Internship",
+    "بورد", "زمالة", "دورة", "امتياز",
+    # Common descriptors
+    "Group", "Channel", "Recall", "MCQ", "QBank",
+    "قناة", "مجموعة", "تجميعات", "اختبار",
+    # Year
+    "2026",
+]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # GCC Regulatory bodies — used in compound query matrix
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -140,7 +212,10 @@ _TIERS: list[str] = [
 # Core keyword list (Method 1)
 # ─────────────────────────────────────────────────────────────────────────────
 
-SEARCH_QUERIES: list[str] = [
+SEARCH_QUERIES: list[str] = (
+    # ★ Saudi Arabia cities & identifiers — HIGHEST PRIORITY (searched first)
+    SAUDI_KEYWORDS
+    + [
     # ── General medical Arabic ───────────────────────────────────────────────
     "طب", "طبي", "طبيب", "أطباء", "دكتور", "دكاترة",
     "صحة", "مستشفى", "عيادة", "طلاب طب", "كلية طب",
@@ -386,31 +461,16 @@ SEARCH_QUERIES: list[str] = [
     "OSCE", "أوسكي", "اوسكي", "osce prep",
     # SCFHS Prometric
     "SCFHS Prometric", "scfhs prometric", "برومترك الهيئة",
-]
+])
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SEED keywords — curated subset used for progressive combination search
-# (pairs → triples → quads → quintuples). Kept small to avoid explosion.
+# SEED keywords — full pool for progressive combination search.
+# = ALL Saudi cities/identifiers  +  ALL medical seeds
+# This ensures every combination phase (ثنائي/ثلاثي/رباعي/خماسي) can produce
+# queries that mix Saudi locations with medical specialties/exams/training.
 # ─────────────────────────────────────────────────────────────────────────────
 
-SEED_KEYWORDS: list[str] = [
-    # Exams
-    "SMLE", "MRCP", "MRCGP", "MRCEM", "PLAB", "USMLE", "FCPS", "OSCE",
-    "DHA", "HAAD", "DOH", "OMSB", "QCHP", "NHRA", "SCFHS", "Prometric",
-    # Specialties
-    "Internal Medicine", "Surgery", "Pediatrics", "Obstetrics", "Gynecology",
-    "Emergency", "ICU", "Radiology", "Psychiatry", "Nursing",
-    "Family Medicine", "Orthopedic", "Cardiology", "Neurology", "Oncology",
-    "Hematology", "ENT", "Ophthalmology", "Dermatology", "Anesthesia",
-    # Training
-    "Residency", "Fellowship", "Rotation", "Internship", "Board",
-    # Arabic
-    "باطنة", "جراحة", "أطفال", "نساء", "طوارئ", "تمريض", "أشعة", "بورد",
-    # Cities
-    "Jeddah", "Riyadh", "KSA", "Saudi", "UAE",
-    # Year
-    "2026",
-]
+SEED_KEYWORDS: list[str] = SAUDI_KEYWORDS + MEDICAL_SEED_KEYWORDS
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Hashtag queries (Method 7)
@@ -1042,6 +1102,34 @@ def _combo_generator(keywords: list[str], size: int):
         yield " ".join(combo)
 
 
+def _saudi_anchored_combos(
+    saudi_terms: list[str],
+    med_seeds: list[str],
+    total_size: int,
+    max_queries: int = 1000,
+) -> list[str]:
+    """
+    Generate queries where a Saudi term is the anchor + (total_size - 1)
+    medical seeds form the rest.
+      total_size=2 → ثنائي  (Saudi + 1 med)
+      total_size=3 → ثلاثي  (Saudi + 2 med)
+      total_size=4 → رباعي  (Saudi + 3 med)
+      total_size=5 → خماسي  (Saudi + 4 med)
+    Capped at max_queries, shuffled for variety.
+    """
+    combos: list[str] = []
+    n_med = total_size - 1
+    for sa in saudi_terms:
+        for med_combo in itertools.combinations(med_seeds, n_med):
+            combos.append(sa + " " + " ".join(med_combo))
+            if len(combos) >= max_queries * 5:
+                break
+        if len(combos) >= max_queries * 5:
+            break
+    random.shuffle(combos)
+    return combos[:max_queries]
+
+
 async def _run_single_phase(
     client: TelegramClient,
     queries: list[str],
@@ -1092,98 +1180,178 @@ async def run_progressive_keyword_search(
     limit_per_query: int = 20,
 ) -> list[str]:
     """
-    Progressive keyword search across 5 phases:
-      Phase 1: Every keyword in SEARCH_QUERIES individually.
-      Phase 2: All pairs from SEED_KEYWORDS.
-      Phase 3: Triples from SEED_KEYWORDS (capped at max_combo_queries).
-      Phase 4: 4-combinations (capped at max_combo_queries).
-      Phase 5: 5-combinations (capped at max_combo_queries).
+    Progressive keyword search — 9 phases total:
+
+    ★ Saudi-anchored phases (every combination anchored to a Saudi city/term):
+      SA-2  (ثنائي):  Saudi term + 1 medical seed
+      SA-3  (ثلاثي): Saudi term + 2 medical seeds
+      SA-4  (رباعي): Saudi term + 3 medical seeds
+      SA-5  (خماسي): Saudi term + 4 medical seeds
+
+    General phases (all SEED_KEYWORDS mixed freely):
+      Phase 1: Every single keyword in SEARCH_QUERIES
+      Phase 2: All pairs from SEED_KEYWORDS (ثنائي عام)
+      Phase 3: Triples (ثلاثي عام), capped
+      Phase 4: Quads  (رباعي عام), capped
+      Phase 5: Quintuples (خماسي عام), capped
     """
     global _search_stopped
     reset_progressive_search()
     all_found: list[str] = []
 
-    # ── Phase 1: Single keywords ──────────────────────────────────────────────
+    saudi   = SAUDI_KEYWORDS
+    med     = MEDICAL_SEED_KEYWORDS
+    results: dict[str, list[str]] = {}
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SAUDI-ANCHORED PHASES — الكويت / المملكة anchor in every query
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── SA-2: Saudi × Med (ثنائي سعودي) ─────────────────────────────────────
+    sa2 = _saudi_anchored_combos(saudi, med, total_size=2, max_queries=max_combo_queries)
     await status_cb(
-        f"🔍 **البحث التصاعدي — المرحلة 1:** كلمات مفردة\n"
-        f"({len(SEARCH_QUERIES)} كلمة بحثية)"
+        f"🇸🇦 **المرحلة SA-2 — ثنائي سعودي:**\n"
+        f"مدينة سعودية + تخصص طبي ({len(sa2)} تركيبة)"
     )
-    p1 = await _run_single_phase(
+    results["sa2"] = await _run_single_phase(
+        client, sa2, known, status_cb, "SA-2 ثنائي", limit_per_query=limit_per_query,
+    )
+    all_found.extend(results["sa2"])
+    await status_cb(f"✅ SA-2 اكتمل: {len(results['sa2'])} رابط جديد")
+    if _search_stopped:
+        return all_found
+
+    # ── SA-3: Saudi × Med × Med (ثلاثي سعودي) ───────────────────────────────
+    sa3 = _saudi_anchored_combos(saudi, med, total_size=3, max_queries=max_combo_queries)
+    await status_cb(
+        f"🇸🇦 **المرحلة SA-3 — ثلاثي سعودي:**\n"
+        f"مدينة + تخصص + اختبار ({len(sa3)} تركيبة)"
+    )
+    results["sa3"] = await _run_single_phase(
+        client, sa3, known, status_cb, "SA-3 ثلاثي", limit_per_query=limit_per_query,
+    )
+    all_found.extend(results["sa3"])
+    await status_cb(f"✅ SA-3 اكتمل: {len(results['sa3'])} رابط جديد")
+    if _search_stopped:
+        return all_found
+
+    # ── SA-4: Saudi × Med × Med × Med (رباعي سعودي) ─────────────────────────
+    sa4 = _saudi_anchored_combos(saudi, med, total_size=4, max_queries=max_combo_queries)
+    await status_cb(
+        f"🇸🇦 **المرحلة SA-4 — رباعي سعودي:**\n"
+        f"مدينة + 3 مصطلحات طبية ({len(sa4)} تركيبة)"
+    )
+    results["sa4"] = await _run_single_phase(
+        client, sa4, known, status_cb, "SA-4 رباعي", limit_per_query=limit_per_query,
+    )
+    all_found.extend(results["sa4"])
+    await status_cb(f"✅ SA-4 اكتمل: {len(results['sa4'])} رابط جديد")
+    if _search_stopped:
+        return all_found
+
+    # ── SA-5: Saudi × Med × Med × Med × Med (خماسي سعودي) ──────────────────
+    sa5 = _saudi_anchored_combos(saudi, med, total_size=5, max_queries=max_combo_queries)
+    await status_cb(
+        f"🇸🇦 **المرحلة SA-5 — خماسي سعودي:**\n"
+        f"مدينة + 4 مصطلحات طبية ({len(sa5)} تركيبة)"
+    )
+    results["sa5"] = await _run_single_phase(
+        client, sa5, known, status_cb, "SA-5 خماسي", limit_per_query=limit_per_query,
+    )
+    all_found.extend(results["sa5"])
+    await status_cb(f"✅ SA-5 اكتمل: {len(results['sa5'])} رابط جديد")
+    if _search_stopped:
+        return all_found
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # GENERAL PHASES — free combinations from the full SEED_KEYWORDS pool
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # ── Phase 1: Single keywords (all SEARCH_QUERIES) ────────────────────────
+    await status_cb(
+        f"🔍 **المرحلة 1 — كلمات مفردة:**\n"
+        f"({len(SEARCH_QUERIES)} كلمة بحثية شاملة)"
+    )
+    results["p1"] = await _run_single_phase(
         client, SEARCH_QUERIES, known, status_cb, "المرحلة 1",
         limit_per_query=limit_per_query,
     )
-    all_found.extend(p1)
-    await status_cb(f"✅ المرحلة 1 اكتملت: {len(p1)} رابط جديد")
+    all_found.extend(results["p1"])
+    await status_cb(f"✅ المرحلة 1 اكتملت: {len(results['p1'])} رابط جديد")
     if _search_stopped:
         return all_found
 
-    # ── Phase 2: Pairs ────────────────────────────────────────────────────────
+    # ── Phase 2: All pairs (ثنائي عام) ───────────────────────────────────────
     pairs = list(_combo_generator(SEED_KEYWORDS, 2))
     await status_cb(
-        f"🔍 **المرحلة 2:** تركيبات ثنائية\n"
+        f"🔍 **المرحلة 2 — ثنائي عام:**\n"
         f"({len(pairs)} تركيبة من {len(SEED_KEYWORDS)} كلمة محورية)"
     )
-    p2 = await _run_single_phase(
+    results["p2"] = await _run_single_phase(
         client, pairs, known, status_cb, "المرحلة 2",
         limit_per_query=limit_per_query,
     )
-    all_found.extend(p2)
-    await status_cb(f"✅ المرحلة 2 اكتملت: {len(p2)} رابط جديد")
+    all_found.extend(results["p2"])
+    await status_cb(f"✅ المرحلة 2 اكتملت: {len(results['p2'])} رابط جديد")
     if _search_stopped:
         return all_found
 
-    # ── Phase 3: Triples ──────────────────────────────────────────────────────
-    triples_gen = _combo_generator(SEED_KEYWORDS, 3)
-    triples = list(itertools.islice(triples_gen, max_combo_queries))
+    # ── Phase 3: Triples (ثلاثي عام) ─────────────────────────────────────────
+    triples = list(itertools.islice(_combo_generator(SEED_KEYWORDS, 3), max_combo_queries))
     random.shuffle(triples)
     await status_cb(
-        f"🔍 **المرحلة 3:** تركيبات ثلاثية\n"
+        f"🔍 **المرحلة 3 — ثلاثي عام:**\n"
         f"({len(triples)} تركيبة — محدودة بـ {max_combo_queries})"
     )
-    p3 = await _run_single_phase(
+    results["p3"] = await _run_single_phase(
         client, triples, known, status_cb, "المرحلة 3",
         limit_per_query=limit_per_query,
     )
-    all_found.extend(p3)
-    await status_cb(f"✅ المرحلة 3 اكتملت: {len(p3)} رابط جديد")
+    all_found.extend(results["p3"])
+    await status_cb(f"✅ المرحلة 3 اكتملت: {len(results['p3'])} رابط جديد")
     if _search_stopped:
         return all_found
 
-    # ── Phase 4: Quads ────────────────────────────────────────────────────────
-    quads_gen = _combo_generator(SEED_KEYWORDS, 4)
-    quads = list(itertools.islice(quads_gen, max_combo_queries))
+    # ── Phase 4: Quads (رباعي عام) ────────────────────────────────────────────
+    quads = list(itertools.islice(_combo_generator(SEED_KEYWORDS, 4), max_combo_queries))
     random.shuffle(quads)
     await status_cb(
-        f"🔍 **المرحلة 4:** تركيبات رباعية\n"
+        f"🔍 **المرحلة 4 — رباعي عام:**\n"
         f"({len(quads)} تركيبة — محدودة بـ {max_combo_queries})"
     )
-    p4 = await _run_single_phase(
+    results["p4"] = await _run_single_phase(
         client, quads, known, status_cb, "المرحلة 4",
         limit_per_query=limit_per_query,
     )
-    all_found.extend(p4)
-    await status_cb(f"✅ المرحلة 4 اكتملت: {len(p4)} رابط جديد")
+    all_found.extend(results["p4"])
+    await status_cb(f"✅ المرحلة 4 اكتملت: {len(results['p4'])} رابط جديد")
     if _search_stopped:
         return all_found
 
-    # ── Phase 5: Quintuples ───────────────────────────────────────────────────
-    quints_gen = _combo_generator(SEED_KEYWORDS, 5)
-    quints = list(itertools.islice(quints_gen, max_combo_queries))
+    # ── Phase 5: Quintuples (خماسي عام) ──────────────────────────────────────
+    quints = list(itertools.islice(_combo_generator(SEED_KEYWORDS, 5), max_combo_queries))
     random.shuffle(quints)
     await status_cb(
-        f"🔍 **المرحلة 5:** تركيبات خماسية\n"
+        f"🔍 **المرحلة 5 — خماسي عام:**\n"
         f"({len(quints)} تركيبة — محدودة بـ {max_combo_queries})"
     )
-    p5 = await _run_single_phase(
+    results["p5"] = await _run_single_phase(
         client, quints, known, status_cb, "المرحلة 5",
         limit_per_query=limit_per_query,
     )
-    all_found.extend(p5)
+    all_found.extend(results["p5"])
+
+    # ── Final summary ─────────────────────────────────────────────────────────
     await status_cb(
-        f"✅ **البحث التصاعدي اكتمل!**\n"
-        f"المرحلة 1: {len(p1)} | المرحلة 2: {len(p2)} | المرحلة 3: {len(p3)}\n"
-        f"المرحلة 4: {len(p4)} | المرحلة 5: {len(p5)}\n"
-        f"**المجموع: {len(all_found)} رابط جديد**"
+        f"🎉 **البحث التصاعدي اكتمل بالكامل!**\n\n"
+        f"🇸🇦 **مراحل سعودية مُثبَّتة:**\n"
+        f"  ثنائي: {len(results['sa2'])} | ثلاثي: {len(results['sa3'])}\n"
+        f"  رباعي: {len(results['sa4'])} | خماسي: {len(results['sa5'])}\n\n"
+        f"🔍 **مراحل عامة:**\n"
+        f"  مفردة: {len(results['p1'])} | ثنائي: {len(results['p2'])}\n"
+        f"  ثلاثي: {len(results['p3'])} | رباعي: {len(results['p4'])}\n"
+        f"  خماسي: {len(results['p5'])}\n\n"
+        f"**✅ الإجمالي الجديد: {len(all_found)} رابط**"
     )
     return all_found
 
@@ -1215,14 +1383,16 @@ async def run_smart_discovery(
 
     await status_callback(
         "🧠 **بدأ الاكتشاف الذكي المحسّن!**\n\n"
-        "1️⃣  بحث تصاعدي (مفردة → ثنائي → ثلاثي → رباعي → خماسي) 🆕\n"
-        "2️⃣  قنوات مشابهة (Telegram AI)\n"
-        "3️⃣  روابط من البيو\n"
-        "4️⃣  روابط من الرسائل\n"
-        "5️⃣  أنماط اسم المستخدم (GCC)\n"
-        "6️⃣  مصفوفة الاستعلامات المركبة\n"
-        "7️⃣  بحث بالهاشتاقات الطبية\n"
-        "8️⃣  Google Dorks (site:t.me)\n"
+        "🇸🇦 **SA-2** ثنائي سعودي: مدينة + تخصص\n"
+        "🇸🇦 **SA-3** ثلاثي سعودي: مدينة + تخصص + اختبار\n"
+        "🇸🇦 **SA-4** رباعي سعودي: مدينة + 3 مصطلحات\n"
+        "🇸🇦 **SA-5** خماسي سعودي: مدينة + 4 مصطلحات\n"
+        "1️⃣  كلمات مفردة (كل SEARCH_QUERIES)\n"
+        "2️⃣  ثنائي عام | 3️⃣ ثلاثي | 4️⃣ رباعي | 5️⃣ خماسي\n"
+        "6️⃣  قنوات مشابهة (Telegram AI)\n"
+        "7️⃣  روابط من البيو والرسائل\n"
+        "8️⃣  أنماط أسماء المستخدمين\n"
+        "9️⃣  مصفوفة مركبة + هاشتاقات + Google Dorks\n"
         "🔒  فلتر احتيال تلقائي"
     )
 
