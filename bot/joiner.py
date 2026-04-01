@@ -37,7 +37,7 @@ from config import (
     JOIN_DELAY_MIN,
     JOIN_DELAY_MAX,
 )
-from database import save_db, load_raw_links, save_raw_links
+from database import save_db, load_raw_links, save_raw_links, load_all_known_links
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Link-detection regexes for post-join scanning
@@ -77,7 +77,8 @@ async def _get_or_create_discovery_channel(
 ) -> int | None:
     """
     Return the channel id for a discovery channel.
-    Creates it on first call and stores the id in db["discovery_channels"].
+    Creates it on first call, stores the id in db["discovery_channels"],
+    and invites ALL registered accounts as members.
     Returns None on failure.
     """
     db.setdefault("discovery_channels", {})
@@ -99,6 +100,24 @@ async def _get_or_create_discovery_channel(
         ch_id = result.chats[0].id
         db["discovery_channels"][channel_key] = ch_id
         save_db(db)
+
+        # ── Invite all registered accounts to the new channel ──────────────
+        all_accounts: list[str] = db.get("accounts", [])
+        for sess in all_accounts:
+            try:
+                async with TelegramClient(sess, API_ID, API_HASH) as user_client:
+                    me = await user_client.get_me()
+                from telethon.tl.functions.channels import InviteToChannelRequest as _Invite
+                from telethon.tl.types import PeerChannel as _PC
+                try:
+                    channel_entity = await client.get_entity(_PC(ch_id))
+                    await client(_Invite(channel=channel_entity, users=[me]))
+                    await asyncio.sleep(1)
+                except Exception:
+                    pass
+            except Exception:
+                continue
+
         return ch_id
     except Exception:
         return None
@@ -122,7 +141,9 @@ async def _scan_joined_for_new_links(
     except Exception:
         return
 
-    existing_raw = set(load_raw_links())
+    # Use the universal known set (raw + archived + joined) to avoid duplicates
+    from database import normalize_link as _norm
+    existing_known = load_all_known_links(joined_links=db.get("joined_links", []))
     new_tg: list[str] = []
     new_wa: list[str] = []
 
@@ -132,15 +153,16 @@ async def _scan_joined_for_new_links(
             link = m.strip().rstrip("/")
             if not link.startswith("http"):
                 link = "https://" + link
-            if link not in existing_raw:
+            if _norm(link) not in existing_known:
                 new_tg.append(link)
-                existing_raw.add(link)
+                existing_known.add(_norm(link))
         for m in _WA_LINK_RE.findall(text):
             link = m.strip().rstrip("/")
             if not link.startswith("http"):
                 link = "https://" + link
-            if link not in new_wa:
+            if _norm(link) not in existing_known:
                 new_wa.append(link)
+                existing_known.add(_norm(link))
 
     # ── Save newly found TG links to raw pipeline ─────────────────────────────
     if new_tg:

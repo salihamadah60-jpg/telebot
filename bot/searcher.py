@@ -317,6 +317,21 @@ SEARCH_QUERIES: list[str] = [
     "lab bot", "بوت تيليجرام طبي",
     "qbank bot", "mcq bot",
 
+    # ── GynObs — all forms ────────────────────────────────────────────────────
+    "gynObs", "gyn obs", "ob gyn", "obgyn", "ob/gyn",
+    "gynecology", "gynaecology", "obstetrics",
+    "obstetrics and gynecology", "obs and gyne", "obs gyne", "obs & gyne",
+    "نساء وولادة", "نساء وتوليد", "طب النساء", "طب التوليد",
+    "نسائية وولادة", "قسم النساء", "توليد ونساء",
+    "MRCOG", "mrcog", "eMRCOG", "emrcog", "DRCOG",
+    "بورد نساء", "arab board gyne",
+    "IVF", "ivf center", "طفل أنبوب",
+    "PCOS", "endometriosis", "بطانة رحم",
+    "midwifery", "midwife", "قابلة",
+    "caesarean", "c-section", "قيصرية",
+    "postpartum", "نفاس", "antenatal",
+    "fetal medicine", "طب الأجنة", "MFM",
+
     # ── New additions ─────────────────────────────────────────────────────────
     # Emergency & critical care
     "ER", "emergency room", "EMERGENCY", "طوارئ ER",
@@ -1193,7 +1208,10 @@ async def run_smart_discovery(
         return 0
 
     existing_raw    = load_raw_links()
-    known: set[str] = {_normalise_link(l).lower() for l in existing_raw}
+    # Seed `known` from ALL layers: raw + already-archived + already-joined
+    # so no previously seen link is ever re-added regardless of pipeline stage.
+    from database import load_all_known_links
+    known: set[str] = load_all_known_links(joined_links=db.get("joined_links", []))
 
     await status_callback(
         "🧠 **بدأ الاكتشاف الذكي المحسّن!**\n\n"

@@ -305,34 +305,48 @@ SPECIALTIES: dict[str, list[str]] = {
 
     # ── Obstetrics & Gynecology ───────────────────────────────────────────────
     "نساء_وولادة": [
-        "نساء وولادة", "obstetrics", "gynecology", "gynaecology",
-        "obgyn", "ob/gyn", "gyne",
-        "توليد", "قابلة", "midwifery", "midwife",
+        # Primary labels — all common forms and abbreviations
+        "نساء وولادة", "نساء وتوليد", "نساء", "توليد",
+        "obstetrics", "gynecology", "gynaecology",
+        "obstetrics and gynecology", "obs and gyne",
+        "obs & gyne", "ob/gyn", "obgyn", "ob gyn", "gynObs", "gyn obs",
+        "gyne", "gyn", "obs",
+        "طب النساء", "طب التوليد", "طب النساء والتوليد",
+        "قسم النساء", "نسائية", "توليد ونساء",
+        "قابلة", "midwifery", "midwife",
         # Fertility
-        "عقم", "infertility", "fertility",
-        "أطفال أنابيب", "ivf", "in vitro fertilization",
-        "icsi", "iui", "طفل أنبوب",
-        "reproductive endocrinology", "pcos",
+        "عقم", "infertility", "fertility", "خصوبة",
+        "أطفال أنابيب", "ivf", "in vitro fertilization", "ivf center",
+        "icsi", "iui", "طفل أنبوب", "تلقيح اصطناعي",
+        "reproductive endocrinology", "pcos", "متلازمة المبيض المتعدد الكيسات",
         # Maternal Fetal Medicine
-        "طب الأجنة", "fetal medicine", "maternal fetal",
-        "high risk pregnancy", "حمل خطر",
+        "طب الأجنة", "fetal medicine", "maternal fetal", "mfm",
+        "high risk pregnancy", "حمل خطر", "حمل عالي الخطورة",
         "preeclampsia", "تسمم حمل",
         "amniocentesis", "بزل السلى",
+        "prenatal", "postnatal", "antenatal", "رعاية ما قبل الولادة",
         # Gynecologic Oncology
         "أورام نسائية", "gynecologic oncology",
-        "cervical cancer", "ovarian cancer",
+        "cervical cancer", "سرطان عنق الرحم",
+        "ovarian cancer", "سرطان المبيض",
         "uterine cancer", "سرطان رحم",
         # Urogynecology
         "urogynecology", "مسالك بولية نسائية",
         "pelvic floor", "قاع الحوض",
-        "incontinence", "prolapse",
+        "incontinence", "prolapse", "هبوط رحم",
         # Minimally Invasive Gyne
-        "hysteroscopy", "laparoscopy gyne", "منظار نساء",
-        "myomectomy", "fibroid", "أورام ليفية",
-        "endometriosis", "بطانة رحم مهاجرة",
-        # General
-        "رحم", "مبيض", "ovary", "uterus",
-        "حمل", "pregnancy", "ولادة", "delivery", "caesarean", "قيصرية",
+        "hysteroscopy", "منظار رحم",
+        "laparoscopy gyne", "laparoscopy", "منظار نساء", "تنظير نسائي",
+        "myomectomy", "fibroid", "أورام ليفية", "ورم ليفي",
+        "endometriosis", "بطانة رحم مهاجرة", "endometrium",
+        # General anatomy terms
+        "رحم", "مبيض", "ovary", "uterus", "cervix", "عنق الرحم",
+        "حمل", "pregnancy", "ولادة", "delivery",
+        "caesarean", "قيصرية", "c-section",
+        "نفاس", "postpartum", "بعد الولادة",
+        # Exams related
+        "mrcog", "eMRCOG", "emrcog", "drcog",
+        "arab board gyne", "بورد نساء",
     ],
 
     # ── Dentistry & Oral Health — all subspecialties ──────────────────────────

@@ -99,3 +99,32 @@ def get_seen_count() -> int:
 def get_raw_count() -> int:
     raw = load_raw_links()
     return len(raw)
+
+
+def load_all_known_links(joined_links: list | None = None) -> set:
+    """
+    Return a normalized set of EVERY link the bot has ever seen,
+    across all storage layers:
+      • seen_links.txt  — links already posted to archive channels
+      • raw_links.json  — links discovered but not yet archived
+      • joined_links    — optional list of links the bot has already joined
+
+    Use this as the universal 'known' set to eliminate duplicates bot-wide,
+    from the very first /start command through every subsequent discovery run.
+    """
+    known: set = set()
+
+    # Layer 1 — archived links (mark_seen was called on each)
+    for link in load_seen_set():
+        known.add(normalize_link(link))
+
+    # Layer 2 — raw (discovered but not yet sorted)
+    for link in load_raw_links():
+        known.add(normalize_link(link))
+
+    # Layer 3 — already-joined links (optional, passed from in-memory db)
+    if joined_links:
+        for link in joined_links:
+            known.add(normalize_link(link))
+
+    return known

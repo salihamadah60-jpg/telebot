@@ -24,6 +24,9 @@ from database import (
     get_seen_count,
     get_raw_count,
     load_raw_links,
+    save_raw_links,
+    normalize_link,
+    load_all_known_links,
 )
 from account_manager import AccountManager
 from channel_setup import (
@@ -1759,6 +1762,136 @@ async def main():
                 await bot.disconnect()
             except Exception:
                 pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# File Import Handler — .txt / .docx link extraction  ★ NEW (Task 3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_FILE_LINK_RE = re.compile(
+    r"(?:https?://)?t\.me/(?:joinchat/|\+)?[A-Za-z0-9_\-/]{5,}"
+    r"|(?:https?://)?(?:chat\.whatsapp\.com|wa\.me)/[A-Za-z0-9_\-]+",
+    re.IGNORECASE,
+)
+
+
+def _extract_links_from_text(text: str) -> list[str]:
+    """Extract all Telegram and WhatsApp links from a plain text string."""
+    found = []
+    for m in _FILE_LINK_RE.findall(text):
+        link = m.strip().rstrip("/")
+        if not link.startswith("http"):
+            link = "https://" + link
+        found.append(link)
+    return found
+
+
+def _extract_links_from_docx(path: str) -> list[str]:
+    """Extract all links from a .docx file (paragraphs + tables)."""
+    try:
+        import docx as _docx
+    except ImportError:
+        return []
+    doc = _docx.Document(path)
+    text_parts = []
+    for para in doc.paragraphs:
+        text_parts.append(para.text)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                text_parts.append(cell.text)
+    return _extract_links_from_text("\n".join(text_parts))
+
+
+@bot.on(events.NewMessage(pattern=None))
+@owner_only
+async def file_import_handler(event):
+    """
+    Handle uploaded .txt or .docx files.
+    Extracts all Telegram/WhatsApp links, deduplicates against every known link,
+    and appends new ones to raw_links.json for the normal sort pipeline.
+    """
+    msg = event.message
+    if not msg.document:
+        return
+
+    # Check file extension
+    fname = ""
+    if msg.document.attributes:
+        for attr in msg.document.attributes:
+            if hasattr(attr, "file_name"):
+                fname = attr.file_name or ""
+                break
+
+    ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
+    if ext not in ("txt", "docx"):
+        return  # ignore non-txt/docx documents silently
+
+    status = await event.reply(
+        f"📂 **استيراد الملف:** `{fname}`\n"
+        "⏳ جارٍ تنزيل الملف وفحص الروابط..."
+    )
+
+    import tempfile, os as _os
+    tmp_dir = tempfile.mkdtemp()
+    tmp_path = _os.path.join(tmp_dir, fname or f"import.{ext}")
+
+    try:
+        await bot.download_media(msg, file=tmp_path)
+
+        # ── Extract links ──────────────────────────────────────────────────
+        if ext == "txt":
+            with open(tmp_path, "r", encoding="utf-8", errors="ignore") as f:
+                raw_text = f.read()
+            found_links = _extract_links_from_text(raw_text)
+        else:
+            found_links = _extract_links_from_docx(tmp_path)
+
+        if not found_links:
+            await status.edit(
+                f"📂 **{fname}**\n"
+                "⚠️ لم يُعثر على أي روابط تيليجرام أو واتساب في الملف."
+            )
+            return
+
+        # ── Deduplicate against ALL known links (raw + archived + joined) ──
+        known = load_all_known_links(joined_links=db.get("joined_links", []))
+        new_links: list[str] = []
+        seen_this_file: set[str] = set()
+
+        for link in found_links:
+            norm = normalize_link(link)
+            if norm not in known and norm not in seen_this_file:
+                new_links.append(link)
+                seen_this_file.add(norm)
+                known.add(norm)
+
+        # ── Append new links to raw pipeline ──────────────────────────────
+        if new_links:
+            existing = load_raw_links()
+            save_raw_links(existing + new_links)
+
+        dupes = len(found_links) - len(new_links)
+        await status.edit(
+            f"📂 **استيراد مكتمل: `{fname}`**\n\n"
+            f"🔍 روابط مُكتشفة في الملف: **{len(found_links):,}**\n"
+            f"✅ جديدة أُضيفت للمعالجة: **{len(new_links):,}**\n"
+            f"♻️ تكرارات تجاهلها: **{dupes:,}**\n\n"
+            + (
+                "▶️ شغّل الفرز لأرشفة الروابط الجديدة."
+                if new_links else
+                "ℹ️ جميع الروابط موجودة مسبقاً — لا جديد."
+            )
+        )
+
+    except Exception as e:
+        await status.edit(f"❌ خطأ أثناء معالجة الملف:\n`{e}`")
+    finally:
+        try:
+            import shutil as _sh
+            _sh.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
