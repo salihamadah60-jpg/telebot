@@ -80,6 +80,15 @@ def save_raw_links(links: list) -> None:
         json.dump(links, f, ensure_ascii=False, indent=2)
 
 
+def save_seen_set(seen: set) -> None:
+    """Bulk-write the full in-memory seen set to file (overwrites, atomic via temp)."""
+    import tempfile, shutil
+    tmp_path = SEEN_LINKS_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(sorted(seen)) + "\n")
+    shutil.move(tmp_path, SEEN_LINKS_FILE)
+
+
 def get_seen_count() -> int:
     if not os.path.exists(SEEN_LINKS_FILE):
         return 0
