@@ -893,12 +893,53 @@ async def add_src_handler(event):
                 f"المصادر الحالية: **{current}**\n\n"
                 f"📋 أرسل روابط مجموعات تيليجرام (كل رابط في سطر):\n"
                 f"`https://t.me/medical_links_group`\n"
-                f"`https://t.me/+AbCdEfGh1234`",
+                f"`https://t.me/+AbCdEfGh1234`\n\n"
+                f"📁 أو أرسل ملف `.txt` أو `.docx` يحتوي الروابط مباشرةً هنا.",
                 buttons=[nav_row(b"make_ch")],
                 parse_mode="md",
             )
-            links_msg   = await conv.get_response()
-            new_sources = [l.strip() for l in links_msg.text.strip().split("\n") if l.strip()]
+            links_msg = await conv.get_response()
+
+            # ── Handle file upload inside the conversation ─────────────────
+            new_sources: list[str] = []
+            if links_msg.document:
+                fname = ""
+                for attr in (links_msg.document.attributes or []):
+                    if hasattr(attr, "file_name"):
+                        fname = attr.file_name or ""
+                        break
+                ext = fname.lower().rsplit(".", 1)[-1] if "." in fname else ""
+                if ext in ("txt", "docx"):
+                    import tempfile as _tf, os as _os2, shutil as _sh2
+                    tmp_dir  = _tf.mkdtemp()
+                    tmp_path = _os2.path.join(tmp_dir, fname or f"sources.{ext}")
+                    try:
+                        await bot.download_media(links_msg, file=tmp_path)
+                        if ext == "txt":
+                            with open(tmp_path, "r", encoding="utf-8", errors="ignore") as f:
+                                new_sources = [
+                                    l.strip() for l in f.read().splitlines()
+                                    if l.strip().startswith("http") or "t.me" in l
+                                ]
+                        else:
+                            new_sources = _extract_links_from_docx(tmp_path)
+                    finally:
+                        _sh2.rmtree(tmp_dir, ignore_errors=True)
+                else:
+                    await conv.send_message(
+                        "❌ نوع الملف غير مدعوم. أرسل ملف `.txt` أو `.docx` فقط.",
+                        parse_mode="md",
+                    )
+                    return
+            elif links_msg.text and links_msg.text.strip():
+                new_sources = [l.strip() for l in links_msg.text.strip().split("\n") if l.strip()]
+
+            if not new_sources:
+                await conv.send_message(
+                    "⚠️ لم يُعثر على أي روابط. تأكد أن الروابط تبدأ بـ `https://t.me/`.",
+                    parse_mode="md",
+                )
+                return
 
             added = 0
             for src in new_sources:
