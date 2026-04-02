@@ -34,6 +34,7 @@ from channel_setup import (
     add_account_to_channels,
     add_owner_to_channels,
     join_accounts_via_invites,
+    _first_authorized_session,
 )
 from harvester import harvest_sources
 from sorter import run_sorter, clear_archive_channels
@@ -576,6 +577,16 @@ async def make_ch_handler(event):
         )
         return
 
+    auth_session = await _first_authorized_session(db["accounts"])
+    if auth_session is None:
+        await event.respond(
+            "❌ **لا يوجد حساب مصرح به**\n\n"
+            "جميع الجلسات منتهية الصلاحية. أعد ربط حساب واحد على الأقل من قائمة الحسابات.",
+            buttons=[nav_row(b"add_acc")],
+            parse_mode="md",
+        )
+        return
+
     await event.respond(
         "**②  إنشاء قنوات الأرشيف السبع**\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -584,7 +595,7 @@ async def make_ch_handler(event):
         parse_mode="md",
     )
 
-    created = await create_archive_channels(db["accounts"][0], db, save_db)
+    created = await create_archive_channels(auth_session, db, save_db)
 
     lines = ["✅ **تم إنشاء قنوات الأرشيف السبع:**\n"]
     for key, ch_id in created.items():
@@ -766,6 +777,16 @@ async def recreate_channels_do_handler(event):
         await event.respond("❌ لا يوجد حساب مرتبط. أضف حساباً أولاً.", buttons=[nav_row()])
         return
 
+    auth_session = await _first_authorized_session(db["accounts"])
+    if auth_session is None:
+        await event.respond(
+            "❌ **لا يوجد حساب مصرح به**\n\n"
+            "جميع الجلسات منتهية الصلاحية. أعد ربط حساب واحد على الأقل قبل إعادة إنشاء القنوات.",
+            buttons=[nav_row(b"add_acc")],
+            parse_mode="md",
+        )
+        return
+
     # Clear old channel data
     db["channels"] = {}
     db.pop("channels_hashes", None)
@@ -777,7 +798,7 @@ async def recreate_channels_do_handler(event):
         parse_mode="md",
     )
 
-    created = await create_archive_channels(db["accounts"][0], db, save_db)
+    created = await create_archive_channels(auth_session, db, save_db)
 
     lines = ["✅ **تم إعادة إنشاء قنوات الأرشيف:**\n"]
     for key, ch_id in created.items():

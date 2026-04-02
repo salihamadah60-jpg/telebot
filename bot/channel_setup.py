@@ -57,10 +57,33 @@ async def _resolve_channel(client: TelegramClient, ch_id: int, access_hash: int 
     return await client.get_entity(PeerChannel(ch_id))
 
 
+async def _first_authorized_session(accounts: list[str]) -> str | None:
+    """Return the first session path in `accounts` whose Telegram token is valid."""
+    for sess in accounts:
+        client = TelegramClient(sess, API_ID, API_HASH)
+        try:
+            await client.connect()
+            if await client.is_user_authorized():
+                await client.disconnect()
+                return sess
+        except Exception:
+            pass
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+    return None
+
+
 async def create_archive_channels(session: str, db: dict, save_db_fn) -> dict:
     """Create the 7 archive channels and add ALL connected accounts + owner as admins."""
     created = {}
-    async with TelegramClient(session, API_ID, API_HASH) as client:
+    client = TelegramClient(session, API_ID, API_HASH)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            raise RuntimeError(f"الجلسة غير مصرح بها: {session} — أعد ربط الحساب.")
         await _warm_up_cache(client)
 
         for key, title in CHANNEL_KEYS.items():
@@ -101,7 +124,12 @@ async def create_archive_channels(session: str, db: dict, save_db_fn) -> dict:
         if channels and OWNER_ID:
             await _add_owner_to_channels(client, OWNER_ID, channels, hashes)
 
-    return created
+        return created
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 
 async def add_account_to_channels(new_session: str, db: dict):
@@ -166,10 +194,23 @@ async def _add_sessions_to_channels(
     )
 
     for sess in sessions:
+        user_client = TelegramClient(sess, API_ID, API_HASH)
         try:
-            async with TelegramClient(sess, API_ID, API_HASH) as user_client:
-                me = await user_client.get_me()
-        except Exception:
+            await user_client.connect()
+            if not await user_client.is_user_authorized():
+                await user_client.disconnect()
+                log.warning("channel_setup: skip unauthorized session %s", sess)
+                continue
+            me = await user_client.get_me()
+            if me is None:
+                await user_client.disconnect()
+                continue
+        except Exception as e:
+            log.warning("channel_setup: could not connect session %s: %s", sess, e)
+            try:
+                await user_client.disconnect()
+            except Exception:
+                pass
             continue
 
         for key, ch_id in channels.items():
@@ -212,6 +253,10 @@ async def _add_sessions_to_channels(
                 log.warning(
                     "channel_setup: promote %s in %s failed: %s", me.id, key, e
                 )
+        try:
+            await user_client.disconnect()
+        except Exception:
+            pass
 
 
 async def add_owner_to_channels(db: dict):
@@ -221,9 +266,21 @@ async def add_owner_to_channels(db: dict):
     if not channels or not accounts or not OWNER_ID:
         return
     hashes = db.get("channels_hashes", {})
-    async with TelegramClient(accounts[0], API_ID, API_HASH) as client:
+    # Use first authorized session — don't blindly use accounts[0] (may be expired)
+    admin_session = await _first_authorized_session(accounts)
+    if admin_session is None:
+        log.warning("add_owner_to_channels: no authorized session found")
+        return
+    client = TelegramClient(admin_session, API_ID, API_HASH)
+    try:
+        await client.connect()
         await _warm_up_cache(client)
         await _add_owner_to_channels(client, OWNER_ID, channels, hashes)
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 
 async def _add_owner_to_channels(
