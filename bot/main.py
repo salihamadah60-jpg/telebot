@@ -530,13 +530,36 @@ async def list_acc_handler(event):
         return
 
     lines = [f"👤 **الحسابات المرتبطة ({len(db['accounts'])}):**\n"]
+    unauthorized_count = 0
     for i, acc in enumerate(db["accounts"], 1):
         info = await AccountManager.get_account_info(acc)
-        lines.append(f"{i}. **{info['name']}** {info['username']}\n   ☎️ {info['phone']}")
+        if info.get("unauthorized"):
+            unauthorized_count += 1
+            lines.append(
+                f"{i}. **{info['name']}**\n"
+                f"   ☎️ {info['phone']}\n"
+                f"   ⚠️ _(يجب إعادة ربط هذا الحساب)_"
+            )
+        else:
+            lines.append(f"{i}. **{info['name']}** {info['username']}\n   ☎️ {info['phone']}")
+
+    if unauthorized_count:
+        lines.append(
+            f"\n🔴 **تحذير:** {unauthorized_count} حساب منتهي الجلسة!\n"
+            "سبب شائع: انتقال البوت لخادم جديد (IP مختلف) فأوقف تيليجرام الجلسات تلقائياً.\n"
+            "**الحل:** أعد ربط كل حساب منتهٍ عبر زر ➕ ربط حساب."
+        )
+
+    buttons = []
+    if unauthorized_count:
+        buttons.append([Button.inline("➕ إعادة ربط حساب", b"add_acc")])
+    else:
+        buttons.append([Button.inline("➕ إضافة حساب آخر", b"add_acc")])
+    buttons.append(nav_row())
 
     await event.respond(
         "\n".join(lines),
-        buttons=[[Button.inline("➕ إضافة حساب آخر", b"add_acc")], nav_row()],
+        buttons=buttons,
         parse_mode="md",
     )
 
@@ -1826,6 +1849,31 @@ async def fallback_callback_handler(event):
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _check_sessions_on_startup():
+    """Check all saved accounts at startup and alert owner if any sessions are expired."""
+    accounts = db.get("accounts", [])
+    if not accounts:
+        return
+    expired = []
+    for acc in accounts:
+        info = await AccountManager.get_account_info(acc)
+        if info.get("unauthorized"):
+            expired.append(acc)
+    if expired:
+        try:
+            await bot.send_message(
+                OWNER_ID,
+                f"🔴 **تنبيه: {len(expired)} حساب انتهت جلسته!**\n\n"
+                f"السبب الأكثر شيوعاً: انتقل البوت إلى خادم جديد (IP مختلف) "
+                f"فأوقف تيليجرام هذه الجلسات تلقائياً لحماية الحسابات.\n\n"
+                f"**الحل:** افتح 👤 حساباتي ثم أعد ربط كل حساب منتهٍ.",
+                buttons=[[Button.inline("👤 عرض الحسابات", b"list_acc")]],
+                parse_mode="md",
+            )
+        except Exception:
+            pass
+
+
 async def main():
     asyncio.create_task(_keep_alive_http())
     while True:
@@ -1836,6 +1884,7 @@ async def main():
             except Exception:
                 pass
             print(f"🤖 البوت يعمل... OWNER_ID={OWNER_ID} | أرسل /start في تيليجرام للبدء.")
+            asyncio.create_task(_check_sessions_on_startup())
             await bot.run_until_disconnected()
         except Exception as e:
             print(f"⚠️ انقطع الاتصال: {e} — إعادة المحاولة خلال 10 ثوانٍ...")

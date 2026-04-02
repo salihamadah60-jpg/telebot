@@ -72,18 +72,43 @@ class AccountManager:
 
     @staticmethod
     async def get_account_info(session: str) -> dict:
+        from telethon.errors import AuthKeyUnregisteredError, UserDeactivatedError, UnauthorizedError
         client = TelegramClient(session, API_ID, API_HASH)
         try:
             await client.connect()
+            authorized = await client.is_user_authorized()
+            if not authorized:
+                await client.disconnect()
+                return {
+                    "name": "⚠️ انتهت الجلسة",
+                    "username": "—",
+                    "phone": "—",
+                    "id": 0,
+                    "unauthorized": True,
+                    "error": "Session expired — account signed out by Telegram",
+                }
             me = await client.get_me()
             name = (me.first_name or "") + (" " + me.last_name if me.last_name else "")
             username = f"@{me.username}" if me.username else "(بدون معرف)"
             phone = me.phone or "?"
             await client.disconnect()
-            return {"name": name.strip(), "username": username, "phone": phone, "id": me.id}
+            return {"name": name.strip(), "username": username, "phone": phone, "id": me.id, "unauthorized": False}
+        except (AuthKeyUnregisteredError, UserDeactivatedError, UnauthorizedError) as e:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+            return {
+                "name": "🚫 محظور / مُسجَّل خروجه",
+                "username": "—",
+                "phone": "—",
+                "id": 0,
+                "unauthorized": True,
+                "error": str(e),
+            }
         except Exception as e:
             try:
                 await client.disconnect()
             except Exception:
                 pass
-            return {"name": "غير متاح", "username": "?", "phone": "?", "id": 0, "error": str(e)}
+            return {"name": "غير متاح", "username": "?", "phone": "?", "id": 0, "unauthorized": True, "error": str(e)}
