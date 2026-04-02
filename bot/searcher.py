@@ -1396,7 +1396,23 @@ async def run_smart_discovery(
         "🔒  فلتر احتيال تلقائي"
     )
 
-    session = accounts[0]
+    # ── Pick first authorized session (accounts[0] may be expired) ─────────────
+    session: str | None = None
+    for _cand in accounts:
+        try:
+            async with TelegramClient(_cand, API_ID, API_HASH) as _tc:
+                if await _tc.is_user_authorized():
+                    session = _cand
+                    break
+        except Exception:
+            continue
+    if session is None:
+        await status_callback(
+            "❌ جميع الجلسات منتهية الصلاحية أو غير مصرح بها.\n"
+            "🔑 أعد ربط الحسابات من قائمة الحسابات."
+        )
+        return 0
+
     all_found: list[str] = []
     m1 = m2 = m3 = m4 = m5 = m6 = m7 = m8 = []
 
@@ -1408,19 +1424,6 @@ async def run_smart_discovery(
 
     try:
       async with TelegramClient(session, API_ID, API_HASH) as client:
-
-        # Guard: skip if session is not authorized (prevents EOFError in daemon env)
-        try:
-            authorized = await client.is_user_authorized()
-        except Exception:
-            authorized = False
-
-        if not authorized:
-            await status_callback(
-                "❌ جلسة المستخدم غير مصرح بها أو منتهية الصلاحية.\n"
-                "🔑 أعد ربط الحساب من قائمة الحسابات."
-            )
-            return 0
 
         # ── Method 1: Progressive Keyword Search (★ replaces old single-phase) ─
         await status_callback(

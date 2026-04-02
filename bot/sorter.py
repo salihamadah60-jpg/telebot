@@ -773,10 +773,10 @@ async def _poster_worker(
                     try:
                         await client.send_message(target_entity, report, parse_mode="md")
                         sent = True
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    except Exception as _fe:
+                        print(f"[poster] send retry failed ({channel_key}): {_fe}")
+                except Exception as _pe:
+                    print(f"[poster] send failed via entity ({channel_key}): {_pe}")
 
             if not sent:
                 raw_id   = db.get("channels", {}).get(channel_key)
@@ -791,10 +791,10 @@ async def _poster_worker(
                         try:
                             await client.send_message(target, report, parse_mode="md")
                             sent = True
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
+                        except Exception as _fe2:
+                            print(f"[poster] send retry (raw_id) failed ({channel_key}): {_fe2}")
+                    except Exception as _pe2:
+                        print(f"[poster] send failed via raw_id ({channel_key}): {_pe2}")
 
             async with file_lock:
                 seen_set.add(normalize_link(link))
@@ -813,8 +813,9 @@ async def _poster_worker(
                     counters["errors"] += 1
                 counters["done"] += 1
 
-    except Exception:
+    except Exception as _poster_crash:
         # Poster crashed — drain queue so inspector doesn't block forever
+        print(f"[poster] CRASHED: {_poster_crash}")
         while True:
             try:
                 item = result_queue.get_nowait()
@@ -947,6 +948,7 @@ async def run_sorter(
     # This prevents the "database is locked" crash that happens when clients
     # sharing the same .session file are opened/closed concurrently.
     clients_info: list[tuple] = []   # [(TelegramClient, name), ...]
+    dead_accounts: list[str]  = []   # human-readable names of expired sessions
     for i, session in enumerate(accounts):
         try:
             client = TelegramClient(
@@ -954,15 +956,29 @@ async def run_sorter(
                 flood_sleep_threshold=0,   # we handle FloodWait ourselves
             )
             await client.connect()
-            try:
-                me = await client.get_me()
-                name = (me.first_name or "") + (f" (@{me.username})" if me.username else "")
-            except Exception:
+            me = await client.get_me()
+            if me is None:
+                # Session file exists but token was invalidated by Telegram
+                dead_label = f"حساب {i + 1}"
+                dead_accounts.append(dead_label)
+                print(f"skip (unauthorized): '{dead_label}' ({session})")
+                await client.disconnect()
+                continue
+            name = (me.first_name or "") + (f" (@{me.username})" if me.username else "")
+            if not name.strip():
                 name = f"حساب {i + 1}"
             clients_info.append((client, name))
             print(f"connected: '{name}' ({session})")
         except Exception as e:
             print(f"failed to connect account {i + 1} ({session}): {e}")
+
+    # Warn about dead sessions before continuing
+    if dead_accounts:
+        await status_callback(
+            f"⚠️ **جلسات منتهية — تحتاج إعادة تسجيل دخول**\n"
+            f"{'، '.join(dead_accounts)}\n\n"
+            f"هذه الحسابات لن تُستخدم في الفرز. أضف هذه الحسابات مجدداً من إعدادات الحسابات."
+        )
 
     if not clients_info:
         await status_callback("❌ تعذر الاتصال بأي حساب. تحقق من الجلسات.")
