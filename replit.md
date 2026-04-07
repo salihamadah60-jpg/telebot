@@ -1,5 +1,7 @@
 # Workspace
 
+> **⚠️ NEVER RESTART BOT — The bot runs on Railway. Restarting it here or on a new IP will sign out all connected Telegram accounts.**
+
 ## Overview
 
 pnpm workspace monorepo using TypeScript. Each package manages its own dependencies.

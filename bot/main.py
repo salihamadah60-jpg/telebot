@@ -1,5 +1,6 @@
 import os
 import re
+import time as _time_module
 import asyncio
 import random
 import threading
@@ -64,15 +65,47 @@ def _is_authorized(sender_id: int) -> bool:
     return sender_id == OWNER_ID or sender_id in fresh.get("trusted_users", [])
 
 
+# How old (seconds) a callback query may be before we silently discard it.
+# Prevents stale button-press floods after a bot restart.
+_CALLBACK_STALE_SECS = 90
+
+
+def _is_stale_callback(event) -> bool:
+    """True if this is a callback query that is older than _CALLBACK_STALE_SECS."""
+    if not isinstance(event, events.CallbackQuery.Event):
+        return False
+    try:
+        ts = getattr(event.query, "date", None) or getattr(event, "date", None)
+        if ts and (_time_module.time() - ts) > _CALLBACK_STALE_SECS:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def owner_only(func):
     """Allows both the owner AND trusted users."""
     @functools.wraps(func)
     async def wrapper(event):
+        # Silently drop stale callback queries — prevents message flooding on restart
+        if _is_stale_callback(event):
+            try:
+                await event.answer()
+            except Exception:
+                pass
+            return
+
         if not _is_authorized(event.sender_id):
             msg = "🚫 غير مصرح لك. أرسل /start لطلب الوصول."
-            try:
-                await event.answer(msg, alert=True)
-            except Exception:
+            is_callback = isinstance(event, events.CallbackQuery.Event)
+            if is_callback:
+                # Only answer (ephemeral alert) — never send a persistent message
+                try:
+                    await event.answer(msg, alert=True)
+                except Exception:
+                    pass
+            else:
+                # Message event: a single respond is fine
                 try:
                     await event.respond(msg, parse_mode="md")
                 except Exception:
@@ -101,11 +134,23 @@ def admin_only(func):
     """Strict owner-only — trusted users cannot access."""
     @functools.wraps(func)
     async def wrapper(event):
+        # Silently drop stale callback queries — prevents message flooding on restart
+        if _is_stale_callback(event):
+            try:
+                await event.answer()
+            except Exception:
+                pass
+            return
+
         if event.sender_id != OWNER_ID:
             msg = "🔒 هذا الإجراء للمالك فقط."
-            try:
-                await event.answer(msg, alert=True)
-            except Exception:
+            is_callback = isinstance(event, events.CallbackQuery.Event)
+            if is_callback:
+                try:
+                    await event.answer(msg, alert=True)
+                except Exception:
+                    pass
+            else:
                 try:
                     await event.respond(msg, parse_mode="md")
                 except Exception:
