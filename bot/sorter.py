@@ -723,6 +723,7 @@ async def _poster_worker(
     seen_set: set,
     result_queue: asyncio.Queue,
     counters: dict,
+    bot_client=None,          # bot TelegramClient for sending warnings to owner
 ) -> None:
     """
     Single dedicated poster: uses accounts[0] to send all inspection results to
@@ -762,44 +763,65 @@ async def _poster_worker(
             channel_key = item["channel_key"]
             report      = item["report"]
 
-            # Only post broken links to the archive; all other types are counted but not sent
+            # Send to the correct archive channel; warn and stop if unreachable
             sent = False
-            if channel_key == "broken":
-                target_entity = channel_entities.get(channel_key)
-                if target_entity is not None:
+            send_error: str | None = None
+
+            target_entity = channel_entities.get(channel_key)
+            if target_entity is not None:
+                try:
+                    await client.send_message(target_entity, report, parse_mode="md")
+                    sent = True
+                except FloodWaitError as e:
+                    await asyncio.sleep(e.seconds)
                     try:
                         await client.send_message(target_entity, report, parse_mode="md")
+                        sent = True
+                    except Exception as _fe:
+                        send_error = str(_fe)
+                        print(f"[poster] send retry failed ({channel_key}): {_fe}")
+                except Exception as _pe:
+                    send_error = str(_pe)
+                    print(f"[poster] send failed via entity ({channel_key}): {_pe}")
+
+            if not sent:
+                raw_id   = db.get("channels", {}).get(channel_key)
+                raw_hash = db.get("channels_hashes", {}).get(channel_key)
+                if raw_id and isinstance(raw_id, int):
+                    target = InputChannel(raw_id, raw_hash) if raw_hash else raw_id
+                    try:
+                        await client.send_message(target, report, parse_mode="md")
                         sent = True
                     except FloodWaitError as e:
                         await asyncio.sleep(e.seconds)
                         try:
-                            await client.send_message(target_entity, report, parse_mode="md")
-                            sent = True
-                        except Exception as _fe:
-                            print(f"[poster] send retry failed ({channel_key}): {_fe}")
-                    except Exception as _pe:
-                        print(f"[poster] send failed via entity ({channel_key}): {_pe}")
-
-                if not sent:
-                    raw_id   = db.get("channels", {}).get(channel_key)
-                    raw_hash = db.get("channels_hashes", {}).get(channel_key)
-                    if raw_id and isinstance(raw_id, int):
-                        target = InputChannel(raw_id, raw_hash) if raw_hash else raw_id
-                        try:
                             await client.send_message(target, report, parse_mode="md")
                             sent = True
-                        except FloodWaitError as e:
-                            await asyncio.sleep(e.seconds)
-                            try:
-                                await client.send_message(target, report, parse_mode="md")
-                                sent = True
-                            except Exception as _fe2:
-                                print(f"[poster] send retry (raw_id) failed ({channel_key}): {_fe2}")
-                        except Exception as _pe2:
-                            print(f"[poster] send failed via raw_id ({channel_key}): {_pe2}")
-            else:
-                # Non-broken links: classify and count but do not post to any archive channel
-                sent = True  # treat as "handled" so it's not counted as an error
+                        except Exception as _fe2:
+                            send_error = str(_fe2)
+                            print(f"[poster] send retry (raw_id) failed ({channel_key}): {_fe2}")
+                    except Exception as _pe2:
+                        send_error = str(_pe2)
+                        print(f"[poster] send failed via raw_id ({channel_key}): {_pe2}")
+
+            # If we still couldn't send — warn the user and stop the sorter
+            if not sent:
+                from config import CHANNEL_KEYS as _CK
+                ch_label = _CK.get(channel_key, channel_key)
+                warning = (
+                    f"⚠️ **تعذّر إرسال رابط إلى قناة الأرشيف**\n\n"
+                    f"القناة: **{ch_label}**\n"
+                    f"الخطأ: `{send_error}`\n\n"
+                    f"**تم إيقاف الفرز لحماية التقدم.**\n"
+                    f"تأكد من أن الحساب منضم للقناة ثم استأنف الفرز."
+                )
+                try:
+                    from config import OWNER_ID as _OID
+                    await bot_client.send_message(_OID, warning, parse_mode="md")
+                except Exception:
+                    pass
+                sorter_ctrl.stop()
+                return
 
             async with file_lock:
                 seen_set.add(normalize_link(link))
@@ -1023,7 +1045,7 @@ async def run_sorter(
     # ── Start dedicated poster (always clients_info[0]) ───────────────────────
     poster_client = clients_info[0][0]
     poster_task   = asyncio.create_task(
-        _poster_worker(poster_client, db, file_lock, seen_set, result_queue, counters)
+        _poster_worker(poster_client, db, file_lock, seen_set, result_queue, counters, bot_client)
     )
 
     # ── Run sequential rotation inspector ─────────────────────────────────────
