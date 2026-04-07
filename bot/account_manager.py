@@ -79,10 +79,11 @@ class AccountManager:
             authorized = await client.is_user_authorized()
             if not authorized:
                 await client.disconnect()
+                phone_from_path = "+" + os.path.basename(session)
                 return {
                     "name": "⚠️ انتهت الجلسة",
                     "username": "—",
-                    "phone": "—",
+                    "phone": phone_from_path,
                     "id": 0,
                     "unauthorized": True,
                     "error": "Session expired — account signed out by Telegram",
@@ -98,10 +99,11 @@ class AccountManager:
                 await client.disconnect()
             except Exception:
                 pass
+            phone_from_path = "+" + os.path.basename(session)
             return {
                 "name": "🚫 محظور / مُسجَّل خروجه",
                 "username": "—",
-                "phone": "—",
+                "phone": phone_from_path,
                 "id": 0,
                 "unauthorized": True,
                 "error": str(e),
@@ -111,4 +113,5 @@ class AccountManager:
                 await client.disconnect()
             except Exception:
                 pass
-            return {"name": "غير متاح", "username": "?", "phone": "?", "id": 0, "unauthorized": True, "error": str(e)}
+            phone_from_path = "+" + os.path.basename(session)
+            return {"name": "غير متاح", "username": "?", "phone": phone_from_path, "id": 0, "unauthorized": True, "error": str(e)}

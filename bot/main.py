@@ -36,6 +36,8 @@ from channel_setup import (
     join_accounts_via_invites,
     _first_authorized_session,
 )
+from telethon.tl.functions.channels import GetParticipantRequest
+from telethon.errors import UserNotParticipantError, ChannelPrivateError
 from harvester import harvest_sources
 from sorter import run_sorter, clear_archive_channels
 from joiner import run_smart_joiner
@@ -133,6 +135,124 @@ async def status_msg(text: str):
         await bot.send_message(OWNER_ID, text, parse_mode="md")
     except Exception:
         pass
+
+
+async def _get_authorized_sessions(accounts: list) -> list:
+    """Return only sessions that are currently authorized (connected accounts)."""
+    authorized = []
+    for sess in accounts:
+        from telethon import TelegramClient as _TC
+        client = _TC(sess, API_ID, API_HASH)
+        try:
+            await client.connect()
+            if await client.is_user_authorized():
+                authorized.append(sess)
+        except Exception:
+            pass
+        finally:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+    return authorized
+
+
+async def _check_and_notify_membership(session: str, db: dict):
+    """
+    For a newly added account: check membership in all archive channels and
+    source groups. Send the account a message listing channels/groups it needs
+    to join (with their links/IDs).
+    """
+    channels = db.get("channels", {})
+    sources  = db.get("sources", [])
+    channel_invites = db.get("channels_invites", [])
+
+    if not channels and not sources:
+        return
+
+    from telethon import TelegramClient as _TC
+    from telethon.tl.types import Channel as _TLChannel, Chat as _TLChat
+    client = _TC(session, API_ID, API_HASH)
+    try:
+        await client.connect()
+        if not await client.is_user_authorized():
+            return
+
+        missing_channels = []
+        missing_sources  = []
+
+        # Check archive channels
+        for key, ch_id in channels.items():
+            if not isinstance(ch_id, int):
+                continue
+            from config import CHANNEL_KEYS as _CK
+            label = _CK.get(key, key)
+            is_member = False
+            try:
+                me = await client.get_me()
+                await client(GetParticipantRequest(ch_id, me.id))
+                is_member = True
+            except (UserNotParticipantError, ChannelPrivateError):
+                is_member = False
+            except Exception:
+                is_member = False
+
+            if not is_member:
+                # Try to find invite link
+                invite = None
+                for lnk in channel_invites:
+                    missing_channels.append((label, lnk))
+                    invite = lnk
+                    break
+                if not invite:
+                    missing_channels.append((label, f"ID: `{ch_id}`"))
+
+        # Check source groups
+        for src in sources:
+            is_member = False
+            try:
+                entity = await client.get_entity(src)
+                me = await client.get_me()
+                if isinstance(entity, (_TLChannel, _TLChat)):
+                    await client(GetParticipantRequest(entity, me.id))
+                    is_member = True
+            except (UserNotParticipantError,):
+                is_member = False
+            except Exception:
+                is_member = False
+
+            if not is_member:
+                missing_sources.append(src)
+
+        if missing_channels or missing_sources:
+            lines = ["📋 **مرحباً! الحساب تمت إضافته للبوت.**\n\nيجب الانضمام للقنوات والمجموعات التالية:"]
+
+            if missing_channels:
+                lines.append("\n🗂 **قنوات الأرشيف (يجب الانضمام):**")
+                seen_links = set()
+                for label, link in missing_channels:
+                    if link not in seen_links:
+                        lines.append(f"• {label}: {link}")
+                        seen_links.add(link)
+
+            if missing_sources:
+                lines.append("\n🔗 **مجموعات المصادر (يجب الانضمام):**")
+                for src in missing_sources:
+                    lines.append(f"• {src}")
+
+            try:
+                me = await client.get_me()
+                await client.send_message(me.id, "\n".join(lines), parse_mode="md")
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
 
 
 def make_edit_callback(msg_id: int, chat_id: int, fixed_buttons=None):
@@ -504,6 +624,10 @@ async def add_acc_handler(event):
                             f"⚠️ لم يتمكن من إضافته للقنوات تلقائياً.\n"
                             f"💡 استخدم زر **🔗 انضمام عبر روابط دعوة** من قائمة القنوات لإصلاح ذلك."
                         )
+
+            # Check membership in archive channels and source groups; notify if missing
+            if is_new and (db.get("channels") or db.get("sources")):
+                asyncio.create_task(_check_and_notify_membership(result, db))
 
             await send_next_step_hint("channels", db)
         else:
@@ -1068,12 +1192,19 @@ async def harvest_handler(event):
         return
 
     existing = get_raw_count()
-    all_sessions = db["accounts"]
+    all_sessions = await _get_authorized_sessions(db["accounts"])
+    if not all_sessions:
+        await event.respond(
+            "❌ **لا توجد حسابات متصلة.**\n\nجميع الحسابات انتهت جلساتها. أعد ربط حساب واحد على الأقل.",
+            buttons=[[Button.inline("➕ ربط حساب", b"add_acc")], nav_row()],
+            parse_mode="md",
+        )
+        return
     _stop_btn = [[Button.inline("⏹ إيقاف الحصاد", b"stop_harvest")]]
     prog_msg = await event.respond(
         f"🌾 **الحصاد الموزع — جارٍ...**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👤 حسابات: **{len(all_sessions)}** | 📋 مصادر: **{len(db['sources'])}**\n"
+        f"👤 حسابات متصلة: **{len(all_sessions)}** | 📋 مصادر: **{len(db['sources'])}**\n"
         f"📦 روابط موجودة: **{existing:,}**\n\n"
         f"⏳ جاري الانضمام للمصادر وتوزيع العمل...",
         buttons=_stop_btn,
@@ -1191,10 +1322,22 @@ async def run_sort_handler(event):
     )
     sorter_ctrl.set_progress_msg(progress_msg.id, OWNER_ID)
 
+    authorized_sessions = await _get_authorized_sessions(db["accounts"])
+    if not authorized_sessions:
+        try:
+            await bot.edit_message(
+                OWNER_ID, progress_msg.id,
+                "❌ **لا توجد حسابات متصلة.** أعد ربط حساب واحد على الأقل.",
+                parse_mode="md",
+            )
+        except Exception:
+            pass
+        return
+
     await run_sorter(
         status_callback=status_msg,
         db=db,
-        accounts=db["accounts"],
+        accounts=authorized_sessions,
         bot_client=bot,
         start_from=start_from,
     )
@@ -1318,10 +1461,18 @@ async def confirm_discover_handler(event):
     )
     prog_cb = make_edit_callback(prog_msg.id, OWNER_ID)
 
+    authorized_disc = await _get_authorized_sessions(db["accounts"])
+    if not authorized_disc:
+        try:
+            await bot.edit_message(OWNER_ID, prog_msg.id, "❌ لا توجد حسابات متصلة.", parse_mode="md")
+        except Exception:
+            pass
+        return
+
     new_count = await run_smart_discovery(
         status_callback=prog_cb,
         db=db,
-        accounts=db["accounts"],
+        accounts=authorized_disc,
         archive_channel_ids=archive_ids,
         source_links=source_links,
     )
@@ -1448,9 +1599,14 @@ async def _ask_join_count_and_start(event, source_key: str):
     source_ch_id = db["channels"].get(source_key)
     links_to_join = []
 
+    authorized_join = await _get_authorized_sessions(db["accounts"])
+    if not authorized_join:
+        await status_msg("❌ لا توجد حسابات متصلة. أعد ربط حساب واحد على الأقل.")
+        return
+
     if source_ch_id:
         try:
-            async with TelegramClient(db["accounts"][0], API_ID, API_HASH) as client:
+            async with TelegramClient(authorized_join[0], API_ID, API_HASH) as client:
                 # Guard: skip session if not authorized (prevents EOFError in daemon)
                 if not await client.is_user_authorized():
                     await status_msg("❌ الجلسة الأولى غير مصرح بها. أعد ربط الحساب.")
@@ -1492,7 +1648,7 @@ async def _ask_join_count_and_start(event, source_key: str):
     await run_smart_joiner(
         status_callback=join_cb,
         links_to_join=links_to_join,
-        accounts=db["accounts"],
+        accounts=authorized_join,
         db=db,
         max_joins=max_joins,
     )
