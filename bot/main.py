@@ -692,7 +692,7 @@ async def add_acc_handler(event):
 async def list_acc_handler(event):
     await event.answer()
     if not db["accounts"]:
-        await event.respond(
+        await event.edit(
             "❌ لا توجد حسابات مرتبطة بعد.",
             buttons=[[Button.inline("➕ ربط حساب الآن", b"add_acc")], nav_row()],
         )
@@ -726,7 +726,7 @@ async def list_acc_handler(event):
         buttons.append([Button.inline("➕ إضافة حساب آخر", b"add_acc")])
     buttons.append(nav_row())
 
-    await event.respond(
+    await event.edit(
         "\n".join(lines),
         buttons=buttons,
         parse_mode="md",
@@ -743,7 +743,7 @@ async def make_ch_handler(event):
     await event.answer("⏳ جاري إنشاء القنوات...")
 
     if not db["accounts"]:
-        await event.respond(
+        await event.edit(
             "🔒 **الخطوة 2 مقفلة**\n\nيجب ربط حساب أولاً (الخطوة 1) قبل إنشاء القنوات.",
             buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
             parse_mode="md",
@@ -752,8 +752,7 @@ async def make_ch_handler(event):
 
     existing = len(db.get("channels", {}))
     if existing >= 7:
-        has_invites = bool(db.get("channels_invites"))
-        await event.respond(
+        await event.edit(
             f"✅ **القنوات السبع موجودة بالفعل!**\n\n"
             + "\n".join(f"• {v}" for v in CHANNEL_KEYS.values())
             + "\n\n💡 إذا لم تستطع الحسابات الوصول للقنوات، استخدم روابط الدعوة للانضمام مباشرة.",
@@ -771,7 +770,7 @@ async def make_ch_handler(event):
 
     auth_session = await _first_authorized_session(db["accounts"])
     if auth_session is None:
-        await event.respond(
+        await event.edit(
             "❌ **لا يوجد حساب مصرح به**\n\n"
             "جميع الجلسات منتهية الصلاحية. أعد ربط حساب واحد على الأقل من قائمة الحسابات.",
             buttons=[nav_row(b"add_acc")],
@@ -779,7 +778,7 @@ async def make_ch_handler(event):
         )
         return
 
-    await event.respond(
+    await event.edit(
         "**②  إنشاء قنوات الأرشيف السبع**\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "⏳ جاري الإنشاء، يرجى الانتظار...\n\n"
@@ -795,12 +794,11 @@ async def make_ch_handler(event):
         status = f"✅ `{ch_id}`" if isinstance(ch_id, int) else f"⚠️ {ch_id}"
         lines.append(f"• {title}: {status}")
 
-    await event.respond(
+    await event.edit(
         "\n".join(lines),
         buttons=[[Button.inline("⏭️ إضافة مصادر ◄", b"add_src")], nav_row(b"add_acc")],
         parse_mode="md",
     )
-    await send_next_step_hint("sources", db)
 
 
 @bot.on(events.CallbackQuery(data=b"add_owner_to_ch"))
@@ -809,31 +807,31 @@ async def add_owner_to_ch_handler(event):
     await event.answer("⏳ جاري إضافتك للقنوات...")
 
     if not db.get("accounts"):
-        await event.respond(
+        await event.edit(
             "❌ لا يوجد حساب مرتبط. أضف حساباً أولاً.",
             buttons=[nav_row()],
         )
         return
 
     if not db.get("channels"):
-        await event.respond(
+        await event.edit(
             "❌ لا توجد قنوات مُنشأة بعد.",
             buttons=[nav_row()],
         )
         return
 
-    await event.respond("⏳ جاري إضافتك كمسؤول في القنوات السبع، يرجى الانتظار...")
+    await event.edit("⏳ جاري إضافتك كمسؤول في القنوات السبع، يرجى الانتظار...")
 
     try:
         await add_owner_to_channels(db)
-        await event.respond(
+        await event.edit(
             "✅ **تمت إضافتك كمسؤول في جميع القنوات السبع!**\n\n"
             "ستجد القنوات الآن في قائمة محادثاتك.",
             buttons=[[Button.inline("⏭️ إضافة مصادر ◄", b"add_src")], nav_row()],
             parse_mode="md",
         )
     except Exception as e:
-        await event.respond(
+        await event.edit(
             f"⚠️ حدث خطأ: {e}",
             buttons=[nav_row()],
         )
@@ -849,14 +847,14 @@ async def join_via_invites_handler(event):
     await event.answer()
 
     if not db.get("accounts"):
-        await event.respond(
+        await event.edit(
             "❌ لا يوجد حساب مرتبط. أضف حساباً أولاً.",
             buttons=[nav_row()],
         )
         return
 
     if not db.get("channels"):
-        await event.respond(
+        await event.edit(
             "❌ لا توجد قنوات مُنشأة بعد.",
             buttons=[nav_row()],
         )
@@ -944,7 +942,7 @@ async def join_via_invites_handler(event):
 @admin_only
 async def recreate_channels_confirm_handler(event):
     await event.answer()
-    await event.respond(
+    await event.edit(
         "⚠️ **تحذير: إعادة إنشاء القنوات**\n\n"
         "سيتم:\n"
         "• حذف معرفات القنوات الحالية من الذاكرة\n"
@@ -966,12 +964,12 @@ async def recreate_channels_do_handler(event):
     await event.answer("⏳ جاري إعادة الإنشاء...")
 
     if not db.get("accounts"):
-        await event.respond("❌ لا يوجد حساب مرتبط. أضف حساباً أولاً.", buttons=[nav_row()])
+        await event.edit("❌ لا يوجد حساب مرتبط. أضف حساباً أولاً.", buttons=[nav_row()])
         return
 
     auth_session = await _first_authorized_session(db["accounts"])
     if auth_session is None:
-        await event.respond(
+        await event.edit(
             "❌ **لا يوجد حساب مصرح به**\n\n"
             "جميع الجلسات منتهية الصلاحية. أعد ربط حساب واحد على الأقل قبل إعادة إنشاء القنوات.",
             buttons=[nav_row(b"add_acc")],
@@ -984,7 +982,7 @@ async def recreate_channels_do_handler(event):
     db.pop("channels_hashes", None)
     save_db(db)
 
-    await event.respond(
+    await event.edit(
         "🔄 **جاري إنشاء قنوات الأرشيف السبع من جديد...**\n"
         + "\n".join(f"🔄 {v}" for v in CHANNEL_KEYS.values()),
         parse_mode="md",
@@ -1002,7 +1000,7 @@ async def recreate_channels_do_handler(event):
         "\n💡 **التالي:** استخدم **🔗 انضمام عبر روابط دعوة** لإضافة باقي الحسابات."
     )
 
-    await event.respond(
+    await event.edit(
         "\n".join(lines),
         buttons=[
             [Button.inline("🔗 انضمام عبر روابط دعوة", b"join_via_invites")],
@@ -1023,8 +1021,7 @@ async def resort_from_scratch_confirm_handler(event):
     await event.answer()
     raw_count  = get_raw_count()
     seen_count = get_seen_count()
-    has_channels = bool(db.get("channels"))
-    await event.respond(
+    await event.edit(
         "⚠️ **إعادة الفرز من البداية**\n\n"
         "سيتم:\n"
         f"• مسح سجل الروابط المرئية ({seen_count:,} رابط)\n"
@@ -1046,45 +1043,42 @@ async def resort_from_scratch_confirm_handler(event):
 @owner_only
 async def resort_from_scratch_do_handler(event):
     await event.answer("⏳ جاري المسح وإعادة الضبط...")
+    pmsg_id = event.message_id
 
     # 1) Clear the seen-set file and reset all stats (including per-channel)
     _do_clear_memory()
 
     # 2) Delete all messages from archive channels if accounts are linked
     if db.get("accounts") and db.get("channels"):
-        prog_msg = await event.respond(
+        await event.edit(
             "🗑 **جاري حذف الرسائل من قنوات الأرشيف...**\n"
             "━━━━━━━━━━━━━━━━━━━━━\n"
             "⏳ جاري التحضير...",
             parse_mode="md",
         )
-        edit_cb = make_edit_callback(prog_msg.id, OWNER_ID)
+        edit_cb = make_edit_callback(pmsg_id, OWNER_ID)
         results = await clear_archive_channels(db["accounts"], db, status_callback=edit_cb)
         total_deleted = sum(results.values())
-        try:
-            await bot.edit_message(
-                OWNER_ID, prog_msg.id,
-                f"✅ **تم حذف رسائل الأرشيف** — {total_deleted:,} رسالة محذوفة.",
-                parse_mode="md",
-            )
-        except Exception:
-            pass
     else:
         total_deleted = 0
 
     raw_count = get_raw_count()
-    await event.respond(
-        f"✅ **تم إعادة الضبط الكامل.**\n\n"
-        f"• سجل الروابط المرئية: ممسوح\n"
-        f"• مؤشر التقدم: 0 / {raw_count:,}\n"
-        f"• رسائل الأرشيف المحذوفة: {total_deleted:,}\n\n"
-        f"اضغط **⚡ فرز** لبدء الفرز من جديد وإرسال الروابط للقنوات.",
-        buttons=[
-            [Button.inline("⚡ بدء الفرز الآن ◄", b"run_sort")],
-            nav_row(),
-        ],
-        parse_mode="md",
-    )
+    try:
+        await bot.edit_message(
+            OWNER_ID, pmsg_id,
+            f"✅ **تم إعادة الضبط الكامل.**\n\n"
+            f"• سجل الروابط المرئية: ممسوح\n"
+            f"• مؤشر التقدم: 0 / {raw_count:,}\n"
+            f"• رسائل الأرشيف المحذوفة: {total_deleted:,}\n\n"
+            f"اضغط **⚡ فرز** لبدء الفرز من جديد وإرسال الروابط للقنوات.",
+            buttons=[
+                [Button.inline("⚡ بدء الفرز الآن ◄", b"run_sort")],
+                nav_row(),
+            ],
+            parse_mode="md",
+        )
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1186,7 +1180,7 @@ async def add_src_handler(event):
 async def list_src_handler(event):
     await event.answer()
     if not db["sources"]:
-        await event.respond(
+        await event.edit(
             "❌ لا توجد مصادر مضافة بعد.",
             buttons=[[Button.inline("✏️ إضافة مصدر ◄", b"add_src")], nav_row()],
         )
@@ -1196,7 +1190,7 @@ async def list_src_handler(event):
     for i, src in enumerate(db["sources"], 1):
         lines.append(f"{i}. `{src}`")
 
-    await event.respond(
+    await event.edit(
         "\n".join(lines),
         buttons=[[Button.inline("✏️ إضافة مصادر جديدة", b"add_src")], nav_row()],
         parse_mode="md",
