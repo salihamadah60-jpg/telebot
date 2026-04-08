@@ -1213,20 +1213,20 @@ async def harvest_handler(event):
     await event.answer()
 
     if not db["accounts"]:
-        await event.respond(
+        await event.edit(
             "🔒 يجب ربط حساب أولاً.",
             buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
         )
         return
     if not db["sources"]:
-        await event.respond(
+        await event.edit(
             "🔒 يجب إضافة مصادر أولاً.",
             buttons=[[Button.inline("✏️ إضافة مصدر ◄", b"add_src")], nav_row()],
         )
         return
 
     if sorter_ctrl.is_harvesting:
-        await event.respond(
+        await event.edit(
             "⚠️ **الحصاد يعمل بالفعل.**\n\nانتظر حتى ينتهي الحصاد الحالي، أو اضغط إيقاف.",
             buttons=[
                 [Button.inline("⏹ إيقاف الحصاد", b"stop_harvest")],
@@ -1239,14 +1239,16 @@ async def harvest_handler(event):
     existing = get_raw_count()
     all_sessions = await _get_authorized_sessions(db["accounts"])
     if not all_sessions:
-        await event.respond(
+        await event.edit(
             "❌ **لا توجد حسابات متصلة.**\n\nجميع الحسابات انتهت جلساتها. أعد ربط حساب واحد على الأقل.",
             buttons=[[Button.inline("➕ ربط حساب", b"add_acc")], nav_row()],
             parse_mode="md",
         )
         return
+
     _stop_btn = [[Button.inline("⏹ إيقاف الحصاد", b"stop_harvest")]]
-    prog_msg = await event.respond(
+    prog_msg_id = event.message_id
+    await event.edit(
         f"🌾 **الحصاد الموزع — جارٍ...**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"👤 حسابات متصلة: **{len(all_sessions)}** | 📋 مصادر: **{len(db['sources'])}**\n"
@@ -1255,7 +1257,7 @@ async def harvest_handler(event):
         buttons=_stop_btn,
         parse_mode="md",
     )
-    prog_cb = make_edit_callback(prog_msg.id, OWNER_ID, fixed_buttons=_stop_btn)
+    prog_cb = make_edit_callback(prog_msg_id, OWNER_ID, fixed_buttons=_stop_btn)
 
     sorter_ctrl.start_harvest()
     try:
@@ -1269,22 +1271,21 @@ async def harvest_handler(event):
 
     new_count = len(harvested) - existing
     try:
-        await bot.edit_message(OWNER_ID, prog_msg.id, "🌾 **الحصاد — اكتمل ✅**", buttons=[nav_row(b"add_src")])
+        await bot.edit_message(
+            OWNER_ID, prog_msg_id,
+            f"🎉 **اكتمل الحصاد!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📦 إجمالي الروابط: **{len(harvested):,}**\n"
+            f"🆕 روابط جديدة: **{new_count:,}**\n\n"
+            f"💾 محفوظة في `raw_links.json`\nهل تريد بدء الفرز الآن؟",
+            buttons=[
+                [Button.inline("⏭️ بدء الفرز الآن ◄", b"run_sort")],
+                nav_row(b"add_src"),
+            ],
+            parse_mode="md",
+        )
     except Exception:
         pass
-    await bot.send_message(
-        OWNER_ID,
-        f"🎉 **اكتمل الحصاد!**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📦 إجمالي الروابط: **{len(harvested):,}**\n"
-        f"🆕 روابط جديدة: **{new_count:,}**\n\n"
-        f"💾 محفوظة في `raw_links.json`\nهل تريد بدء الفرز الآن؟",
-        buttons=[
-            [Button.inline("⏭️ بدء الفرز الآن ◄", b"run_sort")],
-            nav_row(b"add_src"),
-        ],
-        parse_mode="md",
-    )
 
 
 @bot.on(events.CallbackQuery(data=b"stop_harvest"))
@@ -1318,20 +1319,20 @@ async def run_sort_handler(event):
     await event.answer()
 
     if not db["accounts"]:
-        await event.respond(
+        await event.edit(
             "🔒 يجب ربط حساب أولاً.",
             buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
         )
         return
     if not db.get("channels"):
-        await event.respond(
+        await event.edit(
             "🔒 يجب إنشاء القنوات أولاً.",
             buttons=[[Button.inline("📺 إنشاء القنوات ◄", b"make_ch")], nav_row()],
         )
         return
 
     if sorter_ctrl.is_harvesting:
-        await event.respond(
+        await event.edit(
             "⚠️ **الحصاد يعمل الآن.** لا يمكن تشغيل الفرز في نفس الوقت.\n\nانتظر حتى ينتهي الحصاد.",
             buttons=[nav_row()],
             parse_mode="md",
@@ -1340,7 +1341,7 @@ async def run_sort_handler(event):
 
     raw = load_raw_links()
     if not raw:
-        await event.respond(
+        await event.edit(
             "🔒 لا توجد روابط. قم بتشغيل الحصاد أولاً.",
             buttons=[[Button.inline("🌾 بدء الحصاد ◄", b"harvest")], nav_row()],
         )
@@ -1349,30 +1350,30 @@ async def run_sort_handler(event):
     sorter_ctrl.reset()
 
     start_from = db.get("progress", {}).get("last_sorted_index", 0)
-    remaining  = len(raw) - start_from
-    pct        = int(start_from / len(raw) * 100) if raw else 0
-    bar_f      = "▓" * (pct // 10)
-    bar_e      = "░" * (10 - pct // 10)
+    pct   = int(start_from / len(raw) * 100) if raw else 0
+    bar_f = "▓" * (pct // 10)
+    bar_e = "░" * (10 - pct // 10)
 
-    # Send ONE persistent progress message — the sorter will EDIT this message
-    progress_msg = await bot.send_message(
-        OWNER_ID,
+    # Edit the SAME message into the persistent progress message
+    prog_msg_id = event.message_id
+    await event.edit(
         f"📊 **الفرز الشامل — جارٍ...**\n"
         f"[{bar_f}{bar_e}] {pct}%\n\n"
         f"تم: **{start_from:,}** / {len(raw):,} رابط\n"
         f"{'🔄 استئناف من حيث توقفنا...' if start_from > 0 else '⚡ بدء الفرز الشامل...'}\n\n"
-        f"_الأرقام تُحدَّث تلقائياً — لا تُرسل رسائل جديدة._",
+        f"_الأرقام تُحدَّث تلقائياً._",
         buttons=_sort_control_buttons(),
         parse_mode="md",
     )
-    sorter_ctrl.set_progress_msg(progress_msg.id, OWNER_ID)
+    sorter_ctrl.set_progress_msg(prog_msg_id, OWNER_ID)
 
     authorized_sessions = await _get_authorized_sessions(db["accounts"])
     if not authorized_sessions:
         try:
             await bot.edit_message(
-                OWNER_ID, progress_msg.id,
+                OWNER_ID, prog_msg_id,
                 "❌ **لا توجد حسابات متصلة.** أعد ربط حساب واحد على الأقل.",
+                buttons=[nav_row(b"add_acc")],
                 parse_mode="md",
             )
         except Exception:
@@ -1390,23 +1391,26 @@ async def run_sort_handler(event):
 
     if not sorter_ctrl.is_stopped():
         s = db["stats"]
-        await bot.send_message(
-            OWNER_ID,
-            f"🎯 **اكتمل الفرز بنجاح!**\n\n"
-            f"📢 قنوات: **{s.get('ch_channels', 0):,}**  "
-            f"👥 مجموعات: **{s.get('ch_groups', 0):,}**  "
-            f"🤖 بوتات: **{s.get('ch_bots', 0):,}**\n"
-            f"🔐 دعوات: **{s.get('ch_invite', 0):,}**  "
-            f"📂 مجلدات: **{s.get('ch_addlist', 0):,}**  "
-            f"🌐 غير طبي: **{s.get('ch_other', 0):,}**\n"
-            f"💀 تالفة: **{s.get('ch_broken', 0):,}**",
-            buttons=[
-                [Button.inline("🧠 اكتشاف ذكي ◄", b"smart_discover"),
-                 Button.inline("🤝 انضمام ذكي ◄",  b"smart_join")],
-                nav_row(),
-            ],
-            parse_mode="md",
-        )
+        try:
+            await bot.edit_message(
+                OWNER_ID, prog_msg_id,
+                f"🎯 **اكتمل الفرز بنجاح!**\n\n"
+                f"📢 قنوات: **{s.get('ch_channels', 0):,}**  "
+                f"👥 مجموعات: **{s.get('ch_groups', 0):,}**  "
+                f"🤖 بوتات: **{s.get('ch_bots', 0):,}**\n"
+                f"🔐 دعوات: **{s.get('ch_invite', 0):,}**  "
+                f"📂 مجلدات: **{s.get('ch_addlist', 0):,}**  "
+                f"🌐 غير طبي: **{s.get('ch_other', 0):,}**\n"
+                f"💀 تالفة: **{s.get('ch_broken', 0):,}**",
+                buttons=[
+                    [Button.inline("🧠 اكتشاف ذكي ◄", b"smart_discover"),
+                     Button.inline("🤝 انضمام ذكي ◄",  b"smart_join")],
+                    nav_row(),
+                ],
+                parse_mode="md",
+            )
+        except Exception:
+            pass
 
 
 @bot.on(events.CallbackQuery(data=b"sort_pause"))
@@ -1461,14 +1465,14 @@ async def smart_discover_handler(event):
     await event.answer()
 
     if not db["accounts"]:
-        await event.respond(
+        await event.edit(
             "🔒 يجب ربط حساب أولاً.",
             buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
         )
         return
 
     raw_count = get_raw_count()
-    await event.respond(
+    await event.edit(
         f"**⑥  الاكتشاف الذكي**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📦 الروابط الحالية: {raw_count:,}\n\n"
@@ -1498,18 +1502,20 @@ async def confirm_discover_handler(event):
     archive_ids  = {k: v for k, v in db.get("channels", {}).items() if isinstance(v, int)}
     source_links = db.get("sources", [])
 
-    prog_msg = await event.respond(
+    prog_msg_id = event.message_id
+    await event.edit(
         "🧠 **الاكتشاف الذكي — جارٍ...**\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "⏳ جاري التحضير...",
         parse_mode="md",
     )
-    prog_cb = make_edit_callback(prog_msg.id, OWNER_ID)
+    prog_cb = make_edit_callback(prog_msg_id, OWNER_ID)
 
     authorized_disc = await _get_authorized_sessions(db["accounts"])
     if not authorized_disc:
         try:
-            await bot.edit_message(OWNER_ID, prog_msg.id, "❌ لا توجد حسابات متصلة.", parse_mode="md")
+            await bot.edit_message(OWNER_ID, prog_msg_id, "❌ لا توجد حسابات متصلة.",
+                                   buttons=[nav_row()], parse_mode="md")
         except Exception:
             pass
         return
@@ -1522,31 +1528,21 @@ async def confirm_discover_handler(event):
         source_links=source_links,
     )
 
+    result_text = (
+        f"🎉 اكتُشف **{new_count:,}** رابط جديد!\nهل تريد الفرز الآن؟"
+        if new_count > 0
+        else "ℹ️ لم يُكتشف روابط جديدة. المصادر الحالية قد تكون مستنفدة."
+    )
+    result_btns = (
+        [[Button.inline("⏭️ فرز الروابط الجديدة ◄", b"run_sort")], nav_row(b"run_sort")]
+        if new_count > 0
+        else [[Button.inline("⏭️ انضمام ذكي ◄", b"smart_join")], nav_row(b"run_sort")]
+    )
     try:
-        await bot.edit_message(OWNER_ID, prog_msg.id, "🧠 **الاكتشاف الذكي — اكتمل ✅**", buttons=[nav_row(b"run_sort")])
+        await bot.edit_message(OWNER_ID, prog_msg_id, result_text,
+                               buttons=result_btns, parse_mode="md")
     except Exception:
         pass
-
-    if new_count > 0:
-        await bot.send_message(
-            OWNER_ID,
-            f"🎉 اكتُشف **{new_count:,}** رابط جديد!\nهل تريد الفرز الآن؟",
-            buttons=[
-                [Button.inline("⏭️ فرز الروابط الجديدة ◄", b"run_sort")],
-                nav_row(b"run_sort"),
-            ],
-            parse_mode="md",
-        )
-    else:
-        await bot.send_message(
-            OWNER_ID,
-            "ℹ️ لم يُكتشف روابط جديدة. المصادر الحالية قد تكون مستنفدة.",
-            buttons=[
-                [Button.inline("⏭️ انضمام ذكي ◄", b"smart_join")],
-                nav_row(b"run_sort"),
-            ],
-            parse_mode="md",
-        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1559,13 +1555,13 @@ async def smart_join_handler(event):
     await event.answer()
 
     if not db["accounts"]:
-        await event.respond(
+        await event.edit(
             "🔒 يجب ربط حساب أولاً.",
             buttons=[[Button.inline("➕ ربط حساب ◄", b"add_acc")], nav_row()],
         )
         return
     if not db.get("channels"):
-        await event.respond(
+        await event.edit(
             "🔒 يجب إنشاء القنوات وتشغيل الفرز أولاً.",
             buttons=[[Button.inline("📺 إنشاء القنوات ◄", b"make_ch")], nav_row()],
         )
@@ -1585,14 +1581,14 @@ async def smart_join_handler(event):
             channel_buttons.append([Button.inline(label, cb_data)])
 
     if not channel_buttons:
-        await event.respond(
+        await event.edit(
             "🔒 لا توجد قنوات أرشيف منشأة بعد.",
             buttons=[[Button.inline("📺 إنشاء القنوات ◄", b"make_ch")], nav_row()],
         )
         return
 
     joined_count = len(db.get("joined_links", []))
-    await event.respond(
+    await event.edit(
         f"**⑦  الانضمام الذكي**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"🤝 تم الانضمام حتى الآن: **{joined_count:,}**\n\n"
@@ -1605,35 +1601,41 @@ async def smart_join_handler(event):
 async def _ask_join_count_and_start(event, source_key: str):
     await event.answer()
     channel_label = CHANNEL_KEYS.get(source_key, source_key)
+    msg_id  = event.message_id
+    chat_id = OWNER_ID
+
+    async def _edit(text: str, buttons=None):
+        try:
+            await bot.edit_message(chat_id, msg_id, text,
+                                   buttons=buttons or [nav_row(b"smart_join")], parse_mode="md")
+        except Exception:
+            pass
+
+    await _edit(
+        f"✅ المصدر: **{channel_label}**\n\n"
+        f"📊 كم رابطاً تريد الانضمام إليه؟ (مثال: `20`)",
+    )
 
     max_joins = None
     try:
         async with bot.conversation(event.sender_id, timeout=120) as conv:
-            await conv.send_message(
-                f"✅ المصدر: **{channel_label}**\n\n"
-                f"📊 كم رابطاً تريد الانضمام إليه؟ (مثال: `20`)",
-                buttons=[nav_row(b"smart_join")],
-                parse_mode="md",
-            )
             count_msg = await conv.get_response()
-
+            try:
+                await count_msg.delete()
+            except Exception:
+                pass
             try:
                 max_joins = int(count_msg.text.strip())
                 if max_joins <= 0:
                     raise ValueError
             except ValueError:
-                await conv.send_message(
+                await _edit(
                     "❌ رقم غير صحيح. تم الإلغاء.",
                     buttons=[[Button.inline("🔄 حاول مرة أخرى", b"smart_join")], nav_row()],
                 )
                 return
-
-            await conv.send_message(
-                f"⏳ سيبدأ الانضمام إلى **{max_joins}** رابط من **{channel_label}**\n"
-                f"🛡 نظام الحماية الذكي مفعّل (دفعات متقطعة).",
-                parse_mode="md",
-            )
     except asyncio.TimeoutError:
+        await _edit("⏰ انتهت المهلة.", buttons=[[Button.inline("🔄 حاول مرة أخرى", b"smart_join")], nav_row()])
         return
     except Exception:
         return
@@ -1641,20 +1643,24 @@ async def _ask_join_count_and_start(event, source_key: str):
     if max_joins is None:
         return
 
-    source_ch_id = db["channels"].get(source_key)
+    await _edit(
+        f"⏳ سيبدأ الانضمام إلى **{max_joins}** رابط من **{channel_label}**\n"
+        f"🛡 نظام الحماية الذكي مفعّل (دفعات متقطعة)...",
+    )
+
+    source_ch_id  = db["channels"].get(source_key)
     links_to_join = []
 
     authorized_join = await _get_authorized_sessions(db["accounts"])
     if not authorized_join:
-        await status_msg("❌ لا توجد حسابات متصلة. أعد ربط حساب واحد على الأقل.")
+        await _edit("❌ لا توجد حسابات متصلة. أعد ربط حساب واحد على الأقل.")
         return
 
     if source_ch_id:
         try:
             async with TelegramClient(authorized_join[0], API_ID, API_HASH) as client:
-                # Guard: skip session if not authorized (prevents EOFError in daemon)
                 if not await client.is_user_authorized():
-                    await status_msg("❌ الجلسة الأولى غير مصرح بها. أعد ربط الحساب.")
+                    await _edit("❌ الجلسة الأولى غير مصرح بها. أعد ربط الحساب.")
                     return
                 async for msg in client.iter_messages(int(source_ch_id), limit=500):
                     if msg.text:
@@ -1666,29 +1672,26 @@ async def _ask_join_count_and_start(event, source_key: str):
                         if len(links_to_join) >= max_joins * 3:
                             break
         except EOFError:
-            await status_msg("❌ خطأ EOF في الجلسة — الجلسة تحتاج إعادة مصادقة.")
+            await _edit("❌ خطأ EOF في الجلسة — الجلسة تحتاج إعادة مصادقة.")
             return
         except Exception as e:
-            await status_msg(f"❌ خطأ في قراءة روابط القناة: {e}")
+            await _edit(f"❌ خطأ في قراءة روابط القناة: {e}")
 
     if not links_to_join:
-        await bot.send_message(
-            OWNER_ID,
+        await _edit(
             "❌ لا روابط في القناة.\nتأكد من تشغيل الفرز أولاً.",
             buttons=[[Button.inline("⚡ تشغيل الفرز أولاً ◄", b"run_sort")], nav_row()],
         )
         return
 
-    join_prog = await bot.send_message(
-        OWNER_ID,
+    await _edit(
         f"🤝 **الانضمام الذكي — جارٍ...**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"[░░░░░░░░░░] 0%\n"
         f"📋 روابط للانضمام: **{min(max_joins, len(links_to_join))}**\n\n"
         f"⏳ جاري التحضير...",
-        parse_mode="md",
     )
-    join_cb = make_edit_callback(join_prog.id, OWNER_ID)
+    join_cb = make_edit_callback(msg_id, OWNER_ID)
 
     await run_smart_joiner(
         status_callback=join_cb,
@@ -1699,7 +1702,8 @@ async def _ask_join_count_and_start(event, source_key: str):
     )
 
     try:
-        await bot.edit_message(OWNER_ID, join_prog.id, "🤝 **الانضمام الذكي — اكتمل ✅**", buttons=[nav_row(b"smart_join")])
+        await bot.edit_message(OWNER_ID, msg_id, "🤝 **الانضمام الذكي — اكتمل ✅**",
+                               buttons=[nav_row(b"smart_join")])
     except Exception:
         pass
 
@@ -1772,7 +1776,7 @@ async def stats_handler(event):
         f"روابط +invite التي لم ينضم إليها الحساب → قناة 🔐 الدعوات."
     )
 
-    await event.respond(text, buttons=[nav_row()], parse_mode="md")
+    await event.edit(text, buttons=[nav_row()], parse_mode="md")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1790,7 +1794,7 @@ async def clear_mem_handler(event):
     if has_channels:
         buttons.append([Button.inline("🗑 مسح الذاكرة + حذف من القنوات", b"confirm_clear_full")])
     buttons.append([Button.inline("❌ إلغاء", b"home")])
-    await event.respond(
+    await event.edit(
         "⚠️ **تحذير — مسح الذاكرة**\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
         "سيتم مسح:\n"
@@ -1822,7 +1826,7 @@ def _do_clear_memory():
 async def confirm_clear_handler(event):
     await event.answer()
     _do_clear_memory()
-    await event.respond(
+    await event.edit(
         "✅ **تم مسح الذاكرة.**\nيمكنك الآن بدء الفرز من جديد.",
         buttons=[[Button.inline("⚡ بدء الفرز ◄", b"run_sort")], nav_row()],
         parse_mode="md",
@@ -1834,39 +1838,42 @@ async def confirm_clear_handler(event):
 async def confirm_clear_full_handler(event):
     await event.answer()
     if not db.get("accounts"):
-        await event.respond(
-            "❌ لا توجد حسابات مرتبطة — لا يمكن حذف الرسائل.\n"
-            "سيتم مسح الذاكرة فقط.",
+        _do_clear_memory()
+        await event.edit(
+            "✅ **تم مسح الذاكرة.**\n"
+            "_(لا توجد حسابات مرتبطة — لم تُحذف رسائل القنوات)_",
             buttons=[nav_row()],
             parse_mode="md",
         )
-        _do_clear_memory()
         return
 
     _do_clear_memory()
+    prog_msg_id = event.message_id
 
-    prog_msg = await event.respond(
+    await event.edit(
         "🗑 **جاري حذف الرسائل من قنوات الأرشيف...**\n"
         "━━━━━━━━━━━━━━━━━━━━━\n"
         "⏳ جاري التحضير...",
         parse_mode="md",
     )
-
-    edit_cb = make_edit_callback(prog_msg.id, OWNER_ID)
+    edit_cb = make_edit_callback(prog_msg_id, OWNER_ID)
 
     results = await clear_archive_channels(db["accounts"], db, status_callback=edit_cb)
 
     total_deleted = sum(results.values())
     summary_lines = [f"  • {k}: {v} رسالة" for k, v in results.items()]
-    await bot.edit_message(
-        OWNER_ID, prog_msg.id,
-        f"✅ **تم مسح الذاكرة وحذف رسائل الأرشيف.**\n\n"
-        f"🗑 إجمالي الرسائل المحذوفة: **{total_deleted:,}**\n"
-        + "\n".join(summary_lines) + "\n\n"
-        f"يمكنك الآن بدء الفرز من جديد.",
-        buttons=[[Button.inline("⚡ بدء الفرز ◄", b"run_sort")], nav_row()],
-        parse_mode="md",
-    )
+    try:
+        await bot.edit_message(
+            OWNER_ID, prog_msg_id,
+            f"✅ **تم مسح الذاكرة وحذف رسائل الأرشيف.**\n\n"
+            f"🗑 إجمالي الرسائل المحذوفة: **{total_deleted:,}**\n"
+            + "\n".join(summary_lines) + "\n\n"
+            f"يمكنك الآن بدء الفرز من جديد.",
+            buttons=[[Button.inline("⚡ بدء الفرز ◄", b"run_sort")], nav_row()],
+            parse_mode="md",
+        )
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
