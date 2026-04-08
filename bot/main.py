@@ -637,7 +637,7 @@ async def add_acc_handler(event):
             pass
 
     try:
-        async with bot.conversation(OWNER_ID, timeout=120) as conv:
+        async with bot.conversation(OWNER_ID, timeout=120, exclusive=False) as conv:
             phone_msg = await conv.get_response()
             phone     = phone_msg.text.strip()
             try:
@@ -670,8 +670,17 @@ async def add_acc_handler(event):
     except asyncio.TimeoutError:
         await _edit("⏰ انتهت مهلة الإدخال. اضغط **ربط حساب** للمحاولة مجدداً.",
                     buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_acc")], nav_row()])
-    except Exception:
-        pass
+    except AlreadyInConversationError:
+        await _edit(
+            "⚠️ **يوجد إدخال آخر مفتوح.**\n\n"
+            "أرسل أي رسالة لإلغائه، ثم اضغط **ربط حساب** مرة أخرى.",
+            buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_acc")], nav_row()],
+        )
+    except Exception as e:
+        await _edit(
+            f"❌ **خطأ غير متوقع:**\n`{e}`\n\nاضغط **حاول مرة أخرى**.",
+            buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_acc")], nav_row()],
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1044,7 +1053,7 @@ async def join_via_invites_handler(event):
         )
 
     try:
-        async with bot.conversation(OWNER_ID, timeout=180) as conv:
+        async with bot.conversation(OWNER_ID, timeout=180, exclusive=False) as conv:
             reply = await conv.get_response()
             text  = reply.text.strip()
             try:
@@ -1272,7 +1281,7 @@ async def add_src_handler(event):
     )
 
     try:
-        async with bot.conversation(event.sender_id, timeout=180) as conv:
+        async with bot.conversation(event.sender_id, timeout=180, exclusive=False) as conv:
             links_msg = await conv.get_response()
 
             # ── Handle file upload (do NOT delete file messages) ───────────
@@ -1786,7 +1795,7 @@ async def _ask_join_count_and_start(event, source_key: str):
 
     max_joins = None
     try:
-        async with bot.conversation(event.sender_id, timeout=120) as conv:
+        async with bot.conversation(event.sender_id, timeout=120, exclusive=False) as conv:
             count_msg = await conv.get_response()
             try:
                 await count_msg.delete()
