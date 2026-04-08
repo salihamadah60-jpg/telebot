@@ -124,6 +124,11 @@ async def create_archive_channels(session: str, db: dict, save_db_fn) -> dict:
         if channels and OWNER_ID:
             await _add_owner_to_channels(client, OWNER_ID, channels, hashes)
 
+        # ── Record which session is the authorised poster (channel admin) ──
+        # This account is the ONLY one that should send messages to archive channels.
+        db["poster_session"] = session
+        save_db_fn(db)
+
         return created
     finally:
         try:

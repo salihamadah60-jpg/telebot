@@ -710,12 +710,25 @@ async def list_acc_handler(event):
             "**الحل:** أعد ربط كل حساب منتهٍ عبر زر ➕ ربط حساب."
         )
 
+    # Show which account is the current poster
+    poster_session = db.get("poster_session")
+    poster_label = "غير محدد ⚠️"
+    if poster_session:
+        for acc in db["accounts"]:
+            if acc == poster_session:
+                pi = await AccountManager.get_account_info(acc)
+                poster_label = f"{pi['name']} {pi['phone']}"
+                break
+
+    lines.append(f"\n📤 **حساب الناشر (أدمن الأرشيف):** {poster_label}")
+
     buttons = []
     if unauthorized_count:
         buttons.append([Button.inline("➕ إعادة ربط حساب", b"add_acc")])
     else:
         buttons.append([Button.inline("➕ إضافة حساب آخر", b"add_acc")])
-    buttons.append([Button.inline("🗑 حذف حساب", b"del_acc_menu")])
+    buttons.append([Button.inline("📤 تعيين حساب الناشر", b"set_poster_menu"),
+                    Button.inline("🗑 حذف حساب", b"del_acc_menu")])
     buttons.append(nav_row())
 
     await event.edit(
@@ -823,6 +836,58 @@ async def del_acc_do_handler(event):
             [Button.inline("👤 قائمة الحسابات", b"list_acc")],
             nav_row(),
         ],
+        parse_mode="md",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Set poster account (the one with admin rights to archive channels)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bot.on(events.CallbackQuery(data=b"set_poster_menu"))
+@owner_only
+async def set_poster_menu_handler(event):
+    await event.answer()
+    accounts = db.get("accounts", [])
+    if not accounts:
+        await event.edit("❌ لا توجد حسابات.", buttons=[nav_row()])
+        return
+
+    current_poster = db.get("poster_session", "")
+    lines = ["📤 **اختر الحساب الناشر (الأدمن في قنوات الأرشيف):**\n",
+             "_هذا الحساب هو الوحيد الذي يرسل الروابط إلى قنوات الأرشيف — يجب أن يكون أدمناً فيها._\n"]
+    buttons = []
+    for i, acc in enumerate(accounts):
+        info = await AccountManager.get_account_info(acc)
+        label = f"{info['name']} — {info['phone']}"
+        marker = " ✅ (الحالي)" if acc == current_poster else ""
+        lines.append(f"{i + 1}. {label}{marker}")
+        buttons.append([Button.inline(f"{'✅ ' if acc == current_poster else ''}📤 {label}", f"set_poster_do_{i}".encode())])
+
+    buttons.append([Button.inline("↩️ رجوع", b"list_acc")])
+    await event.edit("\n".join(lines), buttons=buttons, parse_mode="md")
+
+
+@bot.on(events.CallbackQuery(data=re.compile(b"set_poster_do_(\\d+)")))
+@owner_only
+async def set_poster_do_handler(event):
+    await event.answer()
+    idx = int(event.data.decode().split("set_poster_do_")[1])
+    accounts = db.get("accounts", [])
+    if idx >= len(accounts):
+        await event.edit("⚠️ الحساب غير موجود.", buttons=[nav_row()])
+        return
+
+    session_path = accounts[idx]
+    info = await AccountManager.get_account_info(session_path)
+    db["poster_session"] = session_path
+    save_db(db)
+
+    await event.edit(
+        f"✅ **تم تعيين حساب الناشر:**\n"
+        f"{info['name']} — {info['phone']}\n\n"
+        f"_هذا الحساب سيُستخدم وحده لإرسال الروابط إلى قنوات الأرشيف._",
+        buttons=[[Button.inline("👤 قائمة الحسابات", b"list_acc")], nav_row()],
         parse_mode="md",
     )
 

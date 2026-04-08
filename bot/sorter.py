@@ -724,10 +724,13 @@ async def _poster_worker(
     result_queue: asyncio.Queue,
     counters: dict,
     bot_client=None,          # bot TelegramClient for sending warnings to owner
+    prog_msg_id: int | None = None,
+    prog_chat_id: int | None = None,
 ) -> None:
     """
-    Single dedicated poster: uses accounts[0] to send all inspection results to
-    archive channels. Runs until it receives the None sentinel.
+    Single dedicated poster: uses the DESIGNATED poster account (the one that
+    created / has admin rights to the archive channels) to send all inspection
+    results.  Runs until it receives the None sentinel.
     The client is opened and managed by run_sorter — do not disconnect here.
     """
     try:
@@ -806,20 +809,35 @@ async def _poster_worker(
 
             # If we still couldn't send — warn the user and stop the sorter
             if not sent:
-                from config import CHANNEL_KEYS as _CK
+                from config import CHANNEL_KEYS as _CK, OWNER_ID as _OID
                 ch_label = _CK.get(channel_key, channel_key)
                 warning = (
                     f"⚠️ **تعذّر إرسال رابط إلى قناة الأرشيف**\n\n"
                     f"القناة: **{ch_label}**\n"
                     f"الخطأ: `{send_error}`\n\n"
                     f"**تم إيقاف الفرز لحماية التقدم.**\n"
-                    f"تأكد من أن الحساب منضم للقناة ثم استأنف الفرز."
+                    f"تأكد من أن حساب الناشر لديه صلاحية الإدارة في القناة ثم استأنف الفرز."
                 )
-                try:
-                    from config import OWNER_ID as _OID
-                    await bot_client.send_message(_OID, warning, parse_mode="md")
-                except Exception:
-                    pass
+                _stop_buttons = [[Button.inline("▶️ استئناف", b"sort_resume"),
+                                  Button.inline("🏠 القائمة الرئيسية", b"home")]]
+                if bot_client:
+                    # Prefer editing the progress message so chat stays clean
+                    edited = False
+                    if prog_msg_id and prog_chat_id:
+                        try:
+                            await bot_client.edit_message(
+                                prog_chat_id, prog_msg_id, warning,
+                                buttons=_stop_buttons,
+                                parse_mode="md",
+                            )
+                            edited = True
+                        except Exception:
+                            pass
+                    if not edited:
+                        try:
+                            await bot_client.send_message(_OID, warning, parse_mode="md")
+                        except Exception:
+                            pass
                 sorter_ctrl.stop()
                 return
 
@@ -974,8 +992,16 @@ async def run_sorter(
     # ── Open ALL clients once and keep them alive for the entire sort ──────────
     # This prevents the "database is locked" crash that happens when clients
     # sharing the same .session file are opened/closed concurrently.
+    #
+    # POSTER ACCOUNT RULE:
+    #   The account stored in db["poster_session"] CREATED the archive channels
+    #   and is the ONLY account with admin rights to post to them.
+    #   All other accounts are INSPECTOR-ONLY — they resolve links but never post.
+    poster_session = db.get("poster_session")
     clients_info: list[tuple] = []   # [(TelegramClient, name), ...]
     dead_accounts: list[str]  = []   # human-readable names of expired sessions
+    poster_idx: int = 0              # index into clients_info of the poster account
+
     for i, session in enumerate(accounts):
         try:
             client = TelegramClient(
@@ -994,8 +1020,11 @@ async def run_sorter(
             name = (me.first_name or "") + (f" (@{me.username})" if me.username else "")
             if not name.strip():
                 name = f"حساب {i + 1}"
+            # Mark if this is the designated poster account
+            if poster_session and session == poster_session:
+                poster_idx = len(clients_info)
             clients_info.append((client, name))
-            print(f"connected: '{name}' ({session})")
+            print(f"connected: '{name}' ({session}){' [POSTER]' if poster_session and session == poster_session else ''}")
         except Exception as e:
             print(f"failed to connect account {i + 1} ({session}): {e}")
 
@@ -1013,16 +1042,28 @@ async def run_sorter(
 
     n = len(clients_info)
 
+    # ── Identify poster client and inspector pool ─────────────────────────────
+    # poster_idx was set during connection above; defaults to 0 if not found.
+    poster_client = clients_info[poster_idx][0]
+    poster_name   = clients_info[poster_idx][1]
+
+    # Inspectors = all accounts EXCEPT the poster (protects the poster from FloodWaits).
+    # If there's only one account, it must do both roles.
+    inspector_clients = [ci for j, ci in enumerate(clients_info) if j != poster_idx]
+    if not inspector_clients:
+        inspector_clients = clients_info   # single-account fallback
+
     await status_callback(
         f"🔄 **الفرز بالتناوب التسلسلي — بدء**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👥 حسابات: **{n}** (تناوب تسلسلي) | 🔗 روابط: **{total:,}**\n"
+        f"👥 حسابات: **{n}** | 🔗 روابط: **{total:,}**\n"
         f"{'🔄 استئناف من حيث توقفنا' if start_from > 0 else '⚡ بدء جديد'}\n"
         f"⚙️ مضاعف الانتظار: **×{FLOOD_MULTIPLIER}** | "
         f"حد الإيقاف الحرج: **{CRITICAL_FLOOD_SECS // 60} دقائق**\n\n"
+        f"📤 **الناشر (أدمن القنوات):** {poster_name}\n"
         + "\n".join(
-            f"  · **{name}** — في الانتظار"
-            for _, name in clients_info
+            f"  · **{name}** — فاحص"
+            for _, name in inspector_clients
         )
     )
 
@@ -1042,16 +1083,18 @@ async def run_sorter(
         )
     ) if prog_msg_id and prog_chat_id else None
 
-    # ── Start dedicated poster (always clients_info[0]) ───────────────────────
-    poster_client = clients_info[0][0]
+    # ── Start dedicated poster (designated channel-admin account) ─────────────
     poster_task   = asyncio.create_task(
-        _poster_worker(poster_client, db, file_lock, seen_set, result_queue, counters, bot_client)
+        _poster_worker(
+            poster_client, db, file_lock, seen_set, result_queue, counters,
+            bot_client, prog_msg_id, prog_chat_id,
+        )
     )
 
-    # ── Run sequential rotation inspector ─────────────────────────────────────
+    # ── Run sequential rotation inspector (helper accounts only) ──────────────
     try:
         await _sequential_inspector(
-            clients_info    = clients_info,
+            clients_info    = inspector_clients,
             pending         = pending,
             file_lock       = file_lock,
             seen_set        = seen_set,
@@ -1266,10 +1309,17 @@ async def sort_links_inline(
     existing_raw = load_raw_links()
     save_raw_links(existing_raw + new_links)
 
-    # ── Open first working account ────────────────────────────────────────
+    # ── Open the designated poster account first (has admin rights to channels) ─
+    # Fall back to the first account in the list if poster_session is unavailable.
+    poster_session = db.get("poster_session")
+    ordered_sessions = list(accounts)
+    if poster_session and poster_session in ordered_sessions:
+        ordered_sessions.remove(poster_session)
+        ordered_sessions.insert(0, poster_session)
+
     client:      TelegramClient | None = None
     client_name: str = ""
-    for i, session in enumerate(accounts):
+    for i, session in enumerate(ordered_sessions):
         try:
             c = TelegramClient(session, API_ID, API_HASH, flood_sleep_threshold=0)
             await c.connect()
