@@ -616,71 +616,62 @@ async def add_acc_handler(event):
     await event.answer()
     count = len(db.get("accounts", []))
 
-    async with bot.conversation(OWNER_ID, timeout=120) as conv:
-        await conv.send_message(
-            f"**①  ربط حساب تيليجرام**\n"
-            f"━━━━━━━━━━━━━━━━━━━━━\n"
-            f"الحسابات المرتبطة حالياً: **{count}**\n\n"
-            f"📱 أرسل رقم الهاتف بالصيغة الدولية:\n"
-            f"`+9671234567890`",
-            buttons=[nav_row()],
-            parse_mode="md",
-        )
-        phone_msg = await conv.get_response()
-        phone     = phone_msg.text.strip()
+    # ── Single persistent message — all updates go through event.edit() ──────
+    await event.edit(
+        f"**①  ربط حساب تيليجرام**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"الحسابات المرتبطة حالياً: **{count}**\n\n"
+        f"📱 أرسل رقم الهاتف بالصيغة الدولية:\n"
+        f"`+9671234567890`",
+        buttons=[nav_row()],
+        parse_mode="md",
+    )
 
-        await conv.send_message("⏳ جاري إرسال كود التحقق...")
-        success, result = await AccountManager.add_account_interactive(conv, phone)
+    msg_id  = event.message_id
+    chat_id = OWNER_ID
 
-        if success:
-            is_new = result not in db["accounts"]
-            if is_new:
-                db["accounts"].append(result)
-                save_db(db)
+    async def _edit(text: str, buttons=None):
+        try:
+            await bot.edit_message(chat_id, msg_id, text, buttons=buttons or [nav_row()], parse_mode="md")
+        except Exception:
+            pass
 
-            info = await AccountManager.get_account_info(result)
-            await conv.send_message(
-                f"✅ **تم ربط الحساب بنجاح!**\n\n"
-                f"👤 {info['name']}  {info['username']}\n"
-                f"☎️ {info['phone']}",
-                parse_mode="md",
-            )
+    try:
+        async with bot.conversation(OWNER_ID, timeout=120) as conv:
+            phone_msg = await conv.get_response()
+            phone     = phone_msg.text.strip()
+            try:
+                await phone_msg.delete()
+            except Exception:
+                pass
 
-            if is_new and db.get("channels"):
-                await conv.send_message("⏳ جاري إضافة الحساب إلى قنوات الأرشيف...")
-                invite_links = db.get("channels_invites", [])
-                if invite_links:
-                    # Use invite links — works even when entity cache is empty
-                    try:
-                        summary = await join_accounts_via_invites([result], invite_links, db, save_db)
-                        s = list(summary.values())[0] if summary else {}
-                        await conv.send_message(
-                            f"✅ تم انضمام الحساب للقنوات عبر روابط الدعوة.\n"
-                            f"انضم: {s.get('joined', 0)} | موجود مسبقاً: {s.get('already', 0)} | أخطاء: {s.get('errors', 0)}"
-                        )
-                    except Exception as e:
-                        await conv.send_message(f"⚠️ فشل الانضمام عبر الروابط:\n{e}")
-                else:
-                    try:
-                        await add_account_to_channels(result, db)
-                        await conv.send_message("✅ تم إضافة الحساب لجميع القنوات كمسؤول.")
-                    except Exception as e:
-                        await conv.send_message(
-                            f"⚠️ لم يتمكن من إضافته للقنوات تلقائياً.\n"
-                            f"💡 استخدم زر **🔗 انضمام عبر روابط دعوة** من قائمة القنوات لإصلاح ذلك."
-                        )
+            await _edit("⏳ جاري إرسال كود التحقق...")
+            success, result = await AccountManager.add_account_interactive(conv, phone, edit_fn=_edit)
 
-            # Check membership in archive channels and source groups; notify if missing
-            if is_new and (db.get("channels") or db.get("sources")):
-                asyncio.create_task(_check_and_notify_membership(result, db))
+            if success:
+                is_new = result not in db["accounts"]
+                if is_new:
+                    db["accounts"].append(result)
+                    save_db(db)
 
-            await send_next_step_hint("channels", db)
-        else:
-            await conv.send_message(
-                f"❌ **فشل ربط الحساب:**\n{result}",
-                buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_acc")], nav_row()],
-                parse_mode="md",
-            )
+                info = await AccountManager.get_account_info(result)
+                await _edit(
+                    f"✅ **تم ربط الحساب بنجاح!**\n\n"
+                    f"👤 {info['name']}  {info['username']}\n"
+                    f"☎️ {info['phone']}\n\n"
+                    f"💡 لإضافة الحساب لقنوات الأرشيف استخدم **🔗 انضمام عبر روابط دعوة** من قائمة القنوات.",
+                    buttons=[[Button.inline("➕ ربط حساب آخر", b"add_acc")], nav_row()],
+                )
+            else:
+                await _edit(
+                    f"❌ **فشل ربط الحساب:**\n{result}",
+                    buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_acc")], nav_row()],
+                )
+    except asyncio.TimeoutError:
+        await _edit("⏰ انتهت مهلة الإدخال. اضغط **ربط حساب** للمحاولة مجدداً.",
+                    buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_acc")], nav_row()])
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -861,77 +852,79 @@ async def join_via_invites_handler(event):
         return
 
     stored_invites = db.get("channels_invites", [])
+    msg_id  = event.message_id
+    chat_id = OWNER_ID
 
-    async with bot.conversation(OWNER_ID, timeout=180) as conv:
-        if stored_invites:
-            await conv.send_message(
-                f"🔗 **روابط الدعوة المحفوظة ({len(stored_invites)}):**\n"
-                + "\n".join(f"• `{l}`" for l in stored_invites)
-                + "\n\nهل تريد استخدام هذه الروابط أم إدخال روابط جديدة؟\n"
-                "أرسل **نعم** للاستخدام، أو أرسل الروابط الجديدة (كل رابط في سطر):",
-                buttons=[nav_row()],
-                parse_mode="md",
-            )
-        else:
-            await conv.send_message(
-                "🔗 **انضمام عبر روابط الدعوة**\n"
-                "━━━━━━━━━━━━━━━━━━━━━\n\n"
-                "أرسل روابط دعوة قنوات الأرشيف السبع (كل رابط في سطر):\n"
-                "`https://t.me/+XXXXXXXXXXXX`",
-                buttons=[nav_row()],
-                parse_mode="md",
-            )
+    async def _edit(text: str, buttons=None):
+        try:
+            await bot.edit_message(chat_id, msg_id, text, buttons=buttons or [nav_row()], parse_mode="md")
+        except Exception:
+            pass
 
-        reply = await conv.get_response()
-        text  = reply.text.strip()
-
-        if text.lower() in ("نعم", "yes", "y") and stored_invites:
-            invite_links = stored_invites
-        else:
-            invite_links = [l.strip() for l in text.split("\n") if "t.me/" in l]
-            if not invite_links:
-                await conv.send_message("❌ لم يتم العثور على روابط صالحة. حاول مرة أخرى.")
-                return
-            # Save for future use
-            db["channels_invites"] = invite_links
-            save_db(db)
-
-        accounts = db.get("accounts", [])
-        await conv.send_message(
-            f"⏳ **جاري الانضمام عبر {len(invite_links)} رابط دعوة...**\n"
-            f"الحسابات: {len(accounts)}\n\n"
-            "قد يستغرق هذا بضع دقائق...",
-            parse_mode="md",
+    if stored_invites:
+        await _edit(
+            f"🔗 **روابط الدعوة المحفوظة ({len(stored_invites)}):**\n"
+            + "\n".join(f"• `{l}`" for l in stored_invites)
+            + "\n\nأرسل **نعم** للاستخدام، أو أرسل الروابط الجديدة (كل رابط في سطر):",
+        )
+    else:
+        await _edit(
+            "🔗 **انضمام عبر روابط الدعوة**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "أرسل روابط دعوة قنوات الأرشيف السبع (كل رابط في سطر):\n"
+            "`https://t.me/+XXXXXXXXXXXX`",
         )
 
-        summary = await join_accounts_via_invites(accounts, invite_links, db, save_db)
+    try:
+        async with bot.conversation(OWNER_ID, timeout=180) as conv:
+            reply = await conv.get_response()
+            text  = reply.text.strip()
+            try:
+                await reply.delete()
+            except Exception:
+                pass
 
-        lines = ["✅ **اكتمل الانضمام عبر روابط الدعوة:**\n"]
-        total_joined  = 0
-        total_already = 0
-        total_errors  = 0
-        for sess, s in summary.items():
-            acc_name = sess.split("/")[-1]
-            total_joined  += s.get("joined",  0)
-            total_already += s.get("already", 0)
-            total_errors  += s.get("errors",  0)
-            lines.append(
-                f"• حساب `{acc_name}`: "
-                f"✅ {s.get('joined',0)} انضم | "
-                f"♻️ {s.get('already',0)} موجود | "
-                f"❌ {s.get('errors',0)} خطأ"
+            if text.lower() in ("نعم", "yes", "y") and stored_invites:
+                invite_links = stored_invites
+            else:
+                invite_links = [l.strip() for l in text.split("\n") if "t.me/" in l]
+                if not invite_links:
+                    await _edit("❌ لم يتم العثور على روابط صالحة. حاول مرة أخرى.",
+                                buttons=[[Button.inline("🔄 حاول مرة أخرى", b"join_via_invites")], nav_row()])
+                    return
+                db["channels_invites"] = invite_links
+                save_db(db)
+
+            accounts = db.get("accounts", [])
+            await _edit(
+                f"⏳ **جاري الانضمام عبر {len(invite_links)} رابط دعوة...**\n"
+                f"الحسابات: {len(accounts)}\n\n"
+                "قد يستغرق هذا بضع دقائق...",
             )
 
-        hashes_found = len(db.get("channels_hashes", {}))
-        lines.append(
-            f"\n📌 هاش الوصول محفوظ لـ **{hashes_found}/7** قناة"
-        )
+            summary = await join_accounts_via_invites(accounts, invite_links, db, save_db)
 
-        await conv.send_message(
-            "\n".join(lines),
-            buttons=[[Button.inline("⏭️ إضافة مصادر ◄", b"add_src")], nav_row()],
-            parse_mode="md",
-        )
+            lines = ["✅ **اكتمل الانضمام عبر روابط الدعوة:**\n"]
+            for sess, s in summary.items():
+                acc_name = sess.split("/")[-1]
+                lines.append(
+                    f"• حساب `{acc_name}`: "
+                    f"✅ {s.get('joined',0)} انضم | "
+                    f"♻️ {s.get('already',0)} موجود | "
+                    f"❌ {s.get('errors',0)} خطأ"
+                )
+            hashes_found = len(db.get("channels_hashes", {}))
+            lines.append(f"\n📌 هاش الوصول محفوظ لـ **{hashes_found}/7** قناة")
+
+            await _edit(
+                "\n".join(lines),
+                buttons=[[Button.inline("⏭️ إضافة مصادر ◄", b"add_src")], nav_row()],
+            )
+    except asyncio.TimeoutError:
+        await _edit("⏰ انتهت مهلة الإدخال. اضغط **انضمام عبر روابط دعوة** للمحاولة مجدداً.",
+                    buttons=[[Button.inline("🔄 حاول مرة أخرى", b"join_via_invites")], nav_row()])
+    except Exception:
+        pass
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1091,23 +1084,30 @@ async def add_src_handler(event):
     await event.answer()
 
     current = len(db.get("sources", []))
+    msg_id  = event.message_id
+    chat_id = OWNER_ID
+
+    async def _edit(text: str, buttons=None):
+        try:
+            await bot.edit_message(chat_id, msg_id, text, buttons=buttons or [nav_row(b"make_ch")], parse_mode="md")
+        except Exception:
+            pass
+
+    await _edit(
+        f"**③  إضافة مصادر الروابط**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"المصادر الحالية: **{current}**\n\n"
+        f"📋 أرسل روابط مجموعات تيليجرام (كل رابط في سطر):\n"
+        f"`https://t.me/medical_links_group`\n"
+        f"`https://t.me/+AbCdEfGh1234`\n\n"
+        f"📁 أو أرسل ملف `.txt` أو `.docx` يحتوي الروابط مباشرةً هنا.",
+    )
 
     try:
         async with bot.conversation(event.sender_id, timeout=180) as conv:
-            await conv.send_message(
-                f"**③  إضافة مصادر الروابط**\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"المصادر الحالية: **{current}**\n\n"
-                f"📋 أرسل روابط مجموعات تيليجرام (كل رابط في سطر):\n"
-                f"`https://t.me/medical_links_group`\n"
-                f"`https://t.me/+AbCdEfGh1234`\n\n"
-                f"📁 أو أرسل ملف `.txt` أو `.docx` يحتوي الروابط مباشرةً هنا.",
-                buttons=[nav_row(b"make_ch")],
-                parse_mode="md",
-            )
             links_msg = await conv.get_response()
 
-            # ── Handle file upload inside the conversation ─────────────────
+            # ── Handle file upload (do NOT delete file messages) ───────────
             new_sources: list[str] = []
             if links_msg.document:
                 fname = ""
@@ -1120,6 +1120,7 @@ async def add_src_handler(event):
                     import tempfile as _tf, os as _os2, shutil as _sh2
                     tmp_dir  = _tf.mkdtemp()
                     tmp_path = _os2.path.join(tmp_dir, fname or f"sources.{ext}")
+                    await _edit("⏳ جاري معالجة الملف...")
                     try:
                         await bot.download_media(links_msg, file=tmp_path)
                         if ext == "txt":
@@ -1133,18 +1134,23 @@ async def add_src_handler(event):
                     finally:
                         _sh2.rmtree(tmp_dir, ignore_errors=True)
                 else:
-                    await conv.send_message(
+                    await _edit(
                         "❌ نوع الملف غير مدعوم. أرسل ملف `.txt` أو `.docx` فقط.",
-                        parse_mode="md",
+                        buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_src")], nav_row()],
                     )
                     return
             elif links_msg.text and links_msg.text.strip():
+                # Delete text messages (not file messages)
+                try:
+                    await links_msg.delete()
+                except Exception:
+                    pass
                 new_sources = [l.strip() for l in links_msg.text.strip().split("\n") if l.strip()]
 
             if not new_sources:
-                await conv.send_message(
+                await _edit(
                     "⚠️ لم يُعثر على أي روابط. تأكد أن الروابط تبدأ بـ `https://t.me/`.",
-                    parse_mode="md",
+                    buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_src")], nav_row()],
                 )
                 return
 
@@ -1155,7 +1161,7 @@ async def add_src_handler(event):
                     added += 1
             save_db(db)
 
-            await conv.send_message(
+            await _edit(
                 f"✅ **تمت إضافة {added} مصدر جديد.**\n"
                 f"📋 إجمالي المصادر: **{len(db['sources'])}**",
                 buttons=[
@@ -1163,10 +1169,10 @@ async def add_src_handler(event):
                     [Button.inline("⏭️ بدء الحصاد ◄",  b"harvest")],
                     nav_row(b"make_ch"),
                 ],
-                parse_mode="md",
             )
     except asyncio.TimeoutError:
-        pass
+        await _edit("⏰ انتهت مهلة الإدخال.",
+                    buttons=[[Button.inline("🔄 حاول مرة أخرى", b"add_src")], nav_row()])
     except Exception:
         pass
 

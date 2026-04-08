@@ -30,7 +30,18 @@ class AccountManager:
         return TelegramClient(s, API_ID, API_HASH)
 
     @staticmethod
-    async def add_account_interactive(bot_conv, phone: str):
+    async def add_account_interactive(bot_conv, phone: str, edit_fn=None):
+        """
+        edit_fn(text) — called to update the single persistent UI message.
+        bot_conv is used ONLY for get_response(); no conv.send_message() calls.
+        """
+        async def _ui(text: str):
+            if edit_fn:
+                try:
+                    await edit_fn(text)
+                except Exception:
+                    pass
+
         session_name = os.path.join(
             SESSIONS_DIR, phone.strip().replace("+", "").replace(" ", "")
         )
@@ -46,18 +57,29 @@ class AccountManager:
             await client.disconnect()
             return False, f"فشل إرسال الكود: {e}"
 
-        await bot_conv.send_message(
-            "📩 أرسل كود التحقق الذي وصلك من تيليجرام:\n"
-            "(أرسل الأرقام فقط، مثال: 12345)"
+        await _ui(
+            "📩 **أرسل كود التحقق** الذي وصلك من تيليجرام:\n"
+            "_(أرسل الأرقام فقط، مثال: 12345)_"
         )
         code_msg = await bot_conv.get_response()
         code = code_msg.text.strip()
+        try:
+            await code_msg.delete()
+        except Exception:
+            pass
+
+        await _ui("⏳ جاري التحقق من الكود...")
 
         try:
             await client.sign_in(phone, code, phone_code_hash=sent.phone_code_hash)
         except SessionPasswordNeededError:
-            await bot_conv.send_message("🔐 الحساب محمي بكلمة مرور. أرسل كلمة المرور:")
+            await _ui("🔐 الحساب محمي بكلمة مرور.\n\n**أرسل كلمة المرور:**")
             pw_msg = await bot_conv.get_response()
+            try:
+                await pw_msg.delete()
+            except Exception:
+                pass
+            await _ui("⏳ جاري التحقق من كلمة المرور...")
             try:
                 await client.sign_in(password=pw_msg.text.strip())
             except Exception as e:
@@ -74,12 +96,28 @@ class AccountManager:
     async def get_account_info(session: str) -> dict:
         from telethon.errors import AuthKeyUnregisteredError, UserDeactivatedError, UnauthorizedError
         client = TelegramClient(session, API_ID, API_HASH)
+        phone_from_path = "+" + os.path.basename(session)
         try:
             await client.connect()
-            authorized = await client.is_user_authorized()
-            if not authorized:
+            # Use get_me() as the authoritative check — is_user_authorized() can return
+            # False on transient connection issues even for valid sessions.
+            me = None
+            try:
+                me = await client.get_me()
+            except (AuthKeyUnregisteredError, UserDeactivatedError, UnauthorizedError):
+                me = None
+            except Exception:
+                # Fallback: also try is_user_authorized
+                try:
+                    if not await client.is_user_authorized():
+                        me = None
+                    else:
+                        me = await client.get_me()
+                except Exception:
+                    me = None
+
+            if me is None:
                 await client.disconnect()
-                phone_from_path = "+" + os.path.basename(session)
                 return {
                     "name": "⚠️ انتهت الجلسة",
                     "username": "—",
@@ -88,10 +126,9 @@ class AccountManager:
                     "unauthorized": True,
                     "error": "Session expired — account signed out by Telegram",
                 }
-            me = await client.get_me()
             name = (me.first_name or "") + (" " + me.last_name if me.last_name else "")
             username = f"@{me.username}" if me.username else "(بدون معرف)"
-            phone = me.phone or "?"
+            phone = ("+" + me.phone) if me.phone and not str(me.phone).startswith("+") else (me.phone or phone_from_path)
             await client.disconnect()
             return {"name": name.strip(), "username": username, "phone": phone, "id": me.id, "unauthorized": False}
         except (AuthKeyUnregisteredError, UserDeactivatedError, UnauthorizedError) as e:
@@ -99,7 +136,6 @@ class AccountManager:
                 await client.disconnect()
             except Exception:
                 pass
-            phone_from_path = "+" + os.path.basename(session)
             return {
                 "name": "🚫 محظور / مُسجَّل خروجه",
                 "username": "—",
@@ -113,5 +149,4 @@ class AccountManager:
                 await client.disconnect()
             except Exception:
                 pass
-            phone_from_path = "+" + os.path.basename(session)
             return {"name": "غير متاح", "username": "?", "phone": phone_from_path, "id": 0, "unauthorized": True, "error": str(e)}
