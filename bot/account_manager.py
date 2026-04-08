@@ -30,10 +30,10 @@ class AccountManager:
         return TelegramClient(s, API_ID, API_HASH)
 
     @staticmethod
-    async def add_account_interactive(bot_conv, phone: str, edit_fn=None):
+    async def add_account_interactive(get_input_fn, phone: str, edit_fn=None):
         """
-        edit_fn(text) — called to update the single persistent UI message.
-        bot_conv is used ONLY for get_response(); no conv.send_message() calls.
+        get_input_fn() — async callable that returns the next Message from the user.
+        edit_fn(text)  — called to update the single persistent UI message.
         """
         async def _ui(text: str):
             if edit_fn:
@@ -61,7 +61,7 @@ class AccountManager:
             "📩 **أرسل كود التحقق** الذي وصلك من تيليجرام:\n"
             "_(أرسل الأرقام فقط، مثال: 12345)_"
         )
-        code_msg = await bot_conv.get_response()
+        code_msg = await get_input_fn()
         code = code_msg.text.strip()
         try:
             await code_msg.delete()
@@ -74,7 +74,7 @@ class AccountManager:
             await client.sign_in(phone, code, phone_code_hash=sent.phone_code_hash)
         except SessionPasswordNeededError:
             await _ui("🔐 الحساب محمي بكلمة مرور.\n\n**أرسل كلمة المرور:**")
-            pw_msg = await bot_conv.get_response()
+            pw_msg = await get_input_fn()
             try:
                 await pw_msg.delete()
             except Exception:

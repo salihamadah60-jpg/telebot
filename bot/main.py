@@ -638,7 +638,11 @@ async def add_acc_handler(event):
 
     try:
         async with bot.conversation(OWNER_ID, timeout=120, exclusive=False) as conv:
-            phone_msg = await conv.get_response()
+            async def _get_input():
+                ev = await conv.wait_event(events.NewMessage(incoming=True, from_users=OWNER_ID))
+                return ev.message
+
+            phone_msg = await _get_input()
             phone     = phone_msg.text.strip()
             try:
                 await phone_msg.delete()
@@ -646,7 +650,7 @@ async def add_acc_handler(event):
                 pass
 
             await _edit("⏳ جاري إرسال كود التحقق...")
-            success, result = await AccountManager.add_account_interactive(conv, phone, edit_fn=_edit)
+            success, result = await AccountManager.add_account_interactive(_get_input, phone, edit_fn=_edit)
 
             if success:
                 is_new = result not in db["accounts"]
@@ -1054,7 +1058,8 @@ async def join_via_invites_handler(event):
 
     try:
         async with bot.conversation(OWNER_ID, timeout=180, exclusive=False) as conv:
-            reply = await conv.get_response()
+            ev    = await conv.wait_event(events.NewMessage(incoming=True, from_users=OWNER_ID))
+            reply = ev.message
             text  = reply.text.strip()
             try:
                 await reply.delete()
@@ -1282,7 +1287,9 @@ async def add_src_handler(event):
 
     try:
         async with bot.conversation(event.sender_id, timeout=180, exclusive=False) as conv:
-            links_msg = await conv.get_response()
+            _sender_id = event.sender_id
+            _ev        = await conv.wait_event(events.NewMessage(incoming=True, from_users=_sender_id))
+            links_msg  = _ev.message
 
             # ── Handle file upload (do NOT delete file messages) ───────────
             new_sources: list[str] = []
@@ -1796,7 +1803,8 @@ async def _ask_join_count_and_start(event, source_key: str):
     max_joins = None
     try:
         async with bot.conversation(event.sender_id, timeout=120, exclusive=False) as conv:
-            count_msg = await conv.get_response()
+            _ev       = await conv.wait_event(events.NewMessage(incoming=True, from_users=event.sender_id))
+            count_msg = _ev.message
             try:
                 await count_msg.delete()
             except Exception:
