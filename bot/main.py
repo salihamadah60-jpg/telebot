@@ -2217,15 +2217,38 @@ _FILE_LINK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches standalone @username handles (Telegram usernames are 5–32 chars,
+# letters/digits/underscores, must start with a letter or digit).
+# Negative lookbehind ensures we don't capture email addresses or mid-word @.
+_AT_HANDLE_RE = re.compile(
+    r"(?<![A-Za-z0-9_])@([A-Za-z][A-Za-z0-9_]{3,31})(?![A-Za-z0-9_@\.])",
+)
+
 
 def _extract_links_from_text(text: str) -> list[str]:
-    """Extract all Telegram and WhatsApp links from a plain text string."""
+    """Extract all Telegram and WhatsApp links (including @username handles) from text."""
     found = []
+    seen_norms: set[str] = set()
+
+    # ── t.me URLs and WhatsApp links ────────────────────────────────────────
     for m in _FILE_LINK_RE.findall(text):
         link = m.strip().rstrip("/")
         if not link.startswith("http"):
             link = "https://" + link
-        found.append(link)
+        norm = link.lower()
+        if norm not in seen_norms:
+            found.append(link)
+            seen_norms.add(norm)
+
+    # ── @username handles → https://t.me/username ───────────────────────────
+    for m in _AT_HANDLE_RE.finditer(text):
+        username = m.group(1)
+        link = f"https://t.me/{username}"
+        norm = link.lower()
+        if norm not in seen_norms:
+            found.append(link)
+            seen_norms.add(norm)
+
     return found
 
 
