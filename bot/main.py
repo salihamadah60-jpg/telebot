@@ -65,22 +65,39 @@ def _is_authorized(sender_id: int) -> bool:
     return sender_id == OWNER_ID or sender_id in fresh.get("trusted_users", [])
 
 
-# How old (seconds) a callback query may be before we silently discard it.
-# Prevents stale button-press floods after a bot restart.
-_CALLBACK_STALE_SECS = 90
+# Timestamp set in main() the moment the bot successfully starts.
+# Any event older than this is considered a stale replay and is silently dropped.
+_BOT_START_TIME: float = 0.0
 
 
-def _is_stale_callback(event) -> bool:
-    """True if this is a callback query that is older than _CALLBACK_STALE_SECS."""
-    if not isinstance(event, events.CallbackQuery.Event):
+def _is_stale_event(event) -> bool:
+    """
+    True if the event pre-dates the current bot session.
+    Covers both NewMessage and CallbackQuery events so stale replays
+    after a restart are silently discarded instead of flooding the chat.
+    """
+    if not _BOT_START_TIME:
         return False
     try:
-        ts = getattr(event.query, "date", None) or getattr(event, "date", None)
-        if ts and (_time_module.time() - ts) > _CALLBACK_STALE_SECS:
+        if isinstance(event, events.CallbackQuery.Event):
+            ts_raw = getattr(event.query, "date", None) or getattr(event, "date", None)
+            ts = float(ts_raw) if ts_raw else None
+        elif isinstance(event, events.NewMessage.Event):
+            date = getattr(getattr(event, "message", None), "date", None)
+            if date is None:
+                return False
+            ts = date.timestamp() if hasattr(date, "timestamp") else float(date)
+        else:
+            return False
+        if ts and ts < _BOT_START_TIME:
             return True
     except Exception:
         pass
     return False
+
+
+# Keep old name as alias so callers that weren't updated still work
+_is_stale_callback = _is_stale_event
 
 
 def owner_only(func):
@@ -574,6 +591,8 @@ async def show_dashboard(target):
 
 @bot.on(events.NewMessage(pattern="/start"))
 async def start_handler(event):
+    if _is_stale_event(event):
+        return
     db.update(load_db())
     if _is_authorized(event.sender_id):
         text, buttons = build_dashboard(db)
@@ -2215,6 +2234,8 @@ async def revoke_user_handler(event):
 @bot.on(events.NewMessage(pattern="/whoami"))
 async def whoami_handler(event):
     """No auth check — lets you find your real Telegram ID."""
+    if _is_stale_event(event):
+        return
     await event.respond(
         f"🪪 **معرفك في تيليجرام:**\n`{event.sender_id}`\n\n"
         f"📌 **OWNER_ID المحمّل:** `{OWNER_ID}`\n\n"
@@ -2268,9 +2289,13 @@ async def _check_sessions_on_startup():
 
 
 async def main():
+    global _BOT_START_TIME
     asyncio.create_task(_keep_alive_http())
     while True:
         try:
+            # Record start time BEFORE connecting so any event whose timestamp
+            # predates this moment is treated as a stale replay and silently dropped.
+            _BOT_START_TIME = _time_module.time()
             await bot.start(bot_token=BOT_TOKEN)
             try:
                 await bot(GetStateRequest())
