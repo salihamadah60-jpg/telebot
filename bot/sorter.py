@@ -1214,3 +1214,170 @@ async def clear_archive_channels(accounts: list, db: dict, status_callback=None)
             continue
 
     return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Inline link sort — for links sent directly in the bot chat
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def sort_links_inline(
+    links: list,
+    db: dict,
+    accounts: list,
+    bot_client,
+    status_callback=None,
+) -> dict:
+    """
+    Immediately inspect and post a small list of links to archive channels.
+    Used for links pasted directly in chat (not via file or full harvest flow).
+
+    Returns:
+        {
+            "posted":        [(link, channel_key), ...],
+            "already_known": [link, ...],
+            "errors":        [link, ...],
+        }
+    """
+    result: dict = {"posted": [], "already_known": [], "errors": []}
+
+    if not accounts:
+        return result
+
+    # ── Build the master known-set ─────────────────────────────────────────
+    seen_set    = load_seen_set()
+    raw_set     = {normalize_link(l) for l in load_raw_links()}
+    joined_set  = {normalize_link(l) for l in db.get("joined_links", [])}
+    all_known   = seen_set | raw_set | joined_set
+
+    # ── Separate new vs already-known ─────────────────────────────────────
+    new_links: list[str] = []
+    for link in links:
+        norm = normalize_link(link)
+        if norm in all_known:
+            result["already_known"].append(link)
+        else:
+            new_links.append(link)
+            all_known.add(norm)   # prevent intra-batch duplicates
+
+    if not new_links:
+        return result
+
+    # ── Add new links to raw_links.json so they survive a bot restart ─────
+    existing_raw = load_raw_links()
+    save_raw_links(existing_raw + new_links)
+
+    # ── Open first working account ────────────────────────────────────────
+    client:      TelegramClient | None = None
+    client_name: str = ""
+    for i, session in enumerate(accounts):
+        try:
+            c = TelegramClient(session, API_ID, API_HASH, flood_sleep_threshold=0)
+            await c.connect()
+            me = await c.get_me()
+            if me is not None:
+                client = c
+                client_name = (
+                    (me.first_name or "") + (f" (@{me.username})" if me.username else "")
+                ).strip() or f"حساب {i + 1}"
+                break
+            await c.disconnect()
+        except Exception:
+            pass
+
+    if client is None:
+        return result
+
+    try:
+        channel_entities = await _resolve_archive_channels(client, db)
+
+        for link in new_links:
+            if status_callback:
+                try:
+                    await status_callback(f"🔍 جاري فحص: `{link}`")
+                except Exception:
+                    pass
+
+            try:
+                is_add = is_addlist_link(link)
+
+                if is_add:
+                    info: dict = {
+                        "ok": True, "title": "مجلد", "username": "",
+                        "bio": "", "link_type": "addlist",
+                        "members": None, "joined": False, "entity": None,
+                    }
+                else:
+                    try:
+                        info = await get_entity_info(client, link)
+                    except FloodWaitError as fw:
+                        await asyncio.sleep(fw.seconds)
+                        try:
+                            info = await get_entity_info(client, link)
+                        except Exception:
+                            result["errors"].append(link)
+                            continue
+
+                is_med      = is_medical(info.get("title", "") + " " + info.get("bio", "")) if info.get("ok") else False
+                specialty   = classify_specialty(info.get("title", "") + " " + info.get("bio", "")) if info.get("ok") else "غير مصنف"
+                channel_key = route_to_channel(link, info, is_add, is_med)
+                report      = build_report(link, info, specialty, channel_key, client_name)
+
+                # ── Post to archive channel ────────────────────────────────
+                sent = False
+                target_entity = channel_entities.get(channel_key)
+                if target_entity is not None:
+                    try:
+                        await client.send_message(target_entity, report, parse_mode="md")
+                        sent = True
+                    except FloodWaitError as fw:
+                        await asyncio.sleep(fw.seconds)
+                        try:
+                            await client.send_message(target_entity, report, parse_mode="md")
+                            sent = True
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                if not sent:
+                    raw_id   = db.get("channels", {}).get(channel_key)
+                    raw_hash = db.get("channels_hashes", {}).get(channel_key)
+                    if raw_id and isinstance(raw_id, int):
+                        target = InputChannel(raw_id, raw_hash) if raw_hash else raw_id
+                        try:
+                            await client.send_message(target, report, parse_mode="md")
+                            sent = True
+                        except Exception:
+                            pass
+
+                # ── Mark seen + update stats ───────────────────────────────
+                seen_set.add(normalize_link(link))
+                mark_seen(link)
+                db["stats"][f"ch_{channel_key}"] = db["stats"].get(f"ch_{channel_key}", 0) + 1
+                if channel_key == "broken":
+                    db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
+                elif channel_key == "invite":
+                    db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
+                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                else:
+                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
+
+                if sent:
+                    result["posted"].append((link, channel_key))
+                else:
+                    result["errors"].append(link)
+
+            except Exception as exc:
+                result["errors"].append(link)
+                print(f"[inline_sort] error on {link}: {exc}")
+
+        save_db(db)
+
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+    return result

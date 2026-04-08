@@ -40,7 +40,7 @@ from channel_setup import (
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.errors import UserNotParticipantError, ChannelPrivateError
 from harvester import harvest_sources
-from sorter import run_sorter, clear_archive_channels
+from sorter import run_sorter, clear_archive_channels, sort_links_inline
 from joiner import run_smart_joiner
 from searcher import run_smart_discovery
 import state as sorter_ctrl
@@ -715,11 +715,114 @@ async def list_acc_handler(event):
         buttons.append([Button.inline("➕ إعادة ربط حساب", b"add_acc")])
     else:
         buttons.append([Button.inline("➕ إضافة حساب آخر", b"add_acc")])
+    buttons.append([Button.inline("🗑 حذف حساب", b"del_acc_menu")])
     buttons.append(nav_row())
 
     await event.edit(
         "\n".join(lines),
         buttons=buttons,
+        parse_mode="md",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Delete account — menu + confirm + execute
+# ─────────────────────────────────────────────────────────────────────────────
+
+@bot.on(events.CallbackQuery(data=b"del_acc_menu"))
+@owner_only
+async def del_acc_menu_handler(event):
+    await event.answer()
+    accounts = db.get("accounts", [])
+    if not accounts:
+        await event.edit(
+            "❌ لا توجد حسابات لحذفها.",
+            buttons=[nav_row()],
+            parse_mode="md",
+        )
+        return
+
+    lines = ["🗑 **اختر الحساب الذي تريد حذفه:**\n"]
+    buttons = []
+    for i, acc in enumerate(accounts):
+        info = await AccountManager.get_account_info(acc)
+        label = f"{info['name']} — {info['phone']}"
+        if info.get("unauthorized"):
+            label += " ⚠️"
+        lines.append(f"{i + 1}. {label}")
+        buttons.append([Button.inline(f"🗑 {label}", f"del_acc_confirm_{i}".encode())])
+
+    buttons.append([Button.inline("↩️ رجوع", b"list_acc")])
+
+    await event.edit(
+        "\n".join(lines),
+        buttons=buttons,
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=re.compile(b"del_acc_confirm_(\\d+)")))
+@owner_only
+async def del_acc_confirm_handler(event):
+    await event.answer()
+    idx = int(event.data.decode().split("del_acc_confirm_")[1])
+    accounts = db.get("accounts", [])
+    if idx >= len(accounts):
+        await event.edit("⚠️ الحساب غير موجود.", buttons=[nav_row()])
+        return
+
+    info = await AccountManager.get_account_info(accounts[idx])
+    label = f"{info['name']} — {info['phone']}"
+
+    await event.edit(
+        f"⚠️ **تأكيد الحذف**\n\n"
+        f"هل أنت متأكد من حذف الحساب:\n**{label}**\n\n"
+        f"سيتم إزالته من قائمة الحسابات.\n"
+        f"_(لن يتم حذف الجلسة من التيليجرام، فقط من البوت)_",
+        buttons=[
+            [Button.inline("✅ نعم، احذفه", f"del_acc_do_{idx}".encode()),
+             Button.inline("❌ إلغاء", b"del_acc_menu")],
+        ],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=re.compile(b"del_acc_do_(\\d+)")))
+@owner_only
+async def del_acc_do_handler(event):
+    await event.answer()
+    idx = int(event.data.decode().split("del_acc_do_")[1])
+    accounts = db.get("accounts", [])
+    if idx >= len(accounts):
+        await event.edit("⚠️ الحساب غير موجود.", buttons=[nav_row()])
+        return
+
+    session_path = accounts[idx]
+    info = await AccountManager.get_account_info(session_path)
+    label = f"{info['name']} — {info['phone']}"
+
+    # Remove from db
+    db["accounts"].pop(idx)
+    save_db(db)
+
+    # Try to delete the session file (non-fatal if it fails)
+    # Telethon stores sessions as <path>.session (SQLite) and <path>.session-journal
+    try:
+        for suffix in (".session", ".session-journal"):
+            p = session_path + suffix
+            if os.path.exists(p):
+                os.remove(p)
+    except Exception:
+        pass
+
+    remaining = len(db["accounts"])
+    await event.edit(
+        f"✅ **تم حذف الحساب:**\n{label}\n\n"
+        f"الحسابات المتبقية: **{remaining}**",
+        buttons=[
+            [Button.inline("👤 قائمة الحسابات", b"list_acc")],
+            nav_row(),
+        ],
         parse_mode="md",
     )
 
@@ -2232,6 +2335,118 @@ async def file_import_handler(event):
             _sh.rmtree(tmp_dir, ignore_errors=True)
         except Exception:
             pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Inline text link sort — links pasted directly in chat
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CHANNEL_KEY_EMOJI = {
+    "channels": "📢",
+    "groups":   "👥",
+    "bots":     "🤖",
+    "invite":   "🔐",
+    "addlist":  "📂",
+    "other":    "🌐",
+    "broken":   "💀",
+}
+
+
+@bot.on(events.NewMessage(pattern=None))
+@owner_only
+async def inline_text_sort_handler(event):
+    """
+    Triggered when the owner sends a plain text message (no file) containing
+    at least one t.me link.  Sorts each link immediately: deduplicates, posts
+    to the correct archive channel, marks as seen, then deletes the original
+    user message from chat.
+    """
+    msg = event.message
+
+    # ── Ignore documents (handled by file_import_handler) ─────────────────
+    if msg.document:
+        return
+
+    # ── Ignore bot commands ────────────────────────────────────────────────
+    text = msg.text or msg.message or ""
+    if text.startswith("/"):
+        return
+
+    # ── Extract links ──────────────────────────────────────────────────────
+    links = _extract_links_from_text(text)
+    if not links:
+        return
+
+    # ── Guard: need accounts & archive channels ────────────────────────────
+    accounts = db.get("accounts", [])
+    channels = db.get("channels", {})
+    if not accounts:
+        status = await event.reply(
+            "⚠️ لا توجد حسابات مرتبطة — أضف حساباً أولاً قبل الفرز.",
+            parse_mode="md",
+        )
+        return
+    if len(channels) < 7:
+        status = await event.reply(
+            "⚠️ قنوات الأرشيف غير مهيأة — أنشئها من الخطوة 2 أولاً.",
+            parse_mode="md",
+        )
+        return
+
+    # ── Acknowledge immediately ────────────────────────────────────────────
+    status = await event.reply(
+        f"🔃 **جاري فرز {len(links)} رابط...**\n"
+        "⏳ يُرجى الانتظار...",
+        parse_mode="md",
+    )
+    user_msg_id = event.message.id
+
+    # ── Sort ───────────────────────────────────────────────────────────────
+    async def _upd(text_upd: str):
+        try:
+            await status.edit(text_upd, parse_mode="md")
+        except Exception:
+            pass
+
+    result = await sort_links_inline(
+        links    = links,
+        db       = db,
+        accounts = accounts,
+        bot_client = bot,
+        status_callback = _upd,
+    )
+
+    # ── Delete original user message ───────────────────────────────────────
+    try:
+        await bot.delete_messages(OWNER_ID, [user_msg_id])
+    except Exception:
+        pass
+
+    # ── Build summary ──────────────────────────────────────────────────────
+    posted   = result["posted"]
+    known    = result["already_known"]
+    errors   = result["errors"]
+    total    = len(links)
+
+    summary_lines = [f"✅ **اكتمل الفرز الفوري — {total} رابط**\n"]
+
+    if posted:
+        summary_lines.append(f"📬 **أُرشف ({len(posted)}):**")
+        for lnk, ck in posted:
+            emoji = _CHANNEL_KEY_EMOJI.get(ck, "📌")
+            summary_lines.append(f"  {emoji} {lnk}")
+
+    if known:
+        summary_lines.append(f"\n♻️ **موجود مسبقاً ({len(known)}) — تم تجاهله:**")
+        for lnk in known:
+            summary_lines.append(f"  • {lnk}")
+
+    if errors:
+        summary_lines.append(f"\n❌ **فشل الفرز ({len(errors)}):**")
+        for lnk in errors:
+            summary_lines.append(f"  • {lnk}")
+
+    await status.edit("\n".join(summary_lines), parse_mode="md")
 
 
 if __name__ == "__main__":
