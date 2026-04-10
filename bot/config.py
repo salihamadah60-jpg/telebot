@@ -9,10 +9,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 OWNER_ID  = int(os.getenv("OWNER_ID", "0"))
 BOT_ID    = int(BOT_TOKEN.split(":")[0]) if BOT_TOKEN and ":" in BOT_TOKEN else 0
 
-DATA_FILE      = "bot_memory.json"
-SEEN_LINKS_FILE = "global_seen.txt"
-RAW_LINKS_FILE  = "raw_links.json"
-SESSIONS_DIR    = "sessions"
+DATA_FILE        = "bot_memory.json"
+SEEN_LINKS_FILE  = "global_seen.txt"      # inspected (may or may not have been posted)
+ARCHIVED_LINKS_FILE = "global_archived.txt"  # ONLY links actually sent to archive channels
+RAW_LINKS_FILE   = "raw_links.json"
+SESSIONS_DIR     = "sessions"
 
 if not os.path.exists(SESSIONS_DIR):
     os.makedirs(SESSIONS_DIR)

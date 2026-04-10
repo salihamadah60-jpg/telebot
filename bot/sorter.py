@@ -48,6 +48,9 @@ from database import (
     load_seen_set,
     mark_seen,
     save_seen_set,
+    load_archived_set,
+    mark_archived,
+    save_archived_set,
     load_raw_links,
     save_raw_links,
     save_db,
@@ -716,44 +719,104 @@ async def _sequential_inspector(
 # Dedicated poster — one account, reads from queue, sends everything
 # ─────────────────────────────────────────────────────────────────────────────
 
+async def _try_send_to_channel(
+    client: TelegramClient,
+    channel_entities: dict,
+    channel_key: str,
+    report: str,
+    db: dict,
+) -> tuple[bool, str]:
+    """
+    Try to send `report` to the archive channel for `channel_key` using `client`.
+    Returns (sent: bool, error_msg: str).
+    Attempts: resolved entity first, then raw InputChannel fallback.
+    Handles one FloodWait retry per attempt.
+    """
+    async def _send(target) -> bool:
+        try:
+            await client.send_message(target, report, parse_mode="md")
+            return True
+        except FloodWaitError as fw:
+            wait = min(fw.seconds, 60)   # cap sleep at 60 s per attempt
+            await asyncio.sleep(wait)
+            try:
+                await client.send_message(target, report, parse_mode="md")
+                return True
+            except Exception:
+                return False
+        except Exception:
+            return False
+
+    # Try resolved entity
+    target_entity = channel_entities.get(channel_key)
+    if target_entity is not None:
+        if await _send(target_entity):
+            return True, ""
+
+    # Fallback: raw channel ID + stored access hash
+    raw_id   = db.get("channels", {}).get(channel_key)
+    raw_hash = db.get("channels_hashes", {}).get(channel_key)
+    if raw_id and isinstance(raw_id, int):
+        target = InputChannel(raw_id, raw_hash) if raw_hash else raw_id
+        if await _send(target):
+            return True, ""
+
+    return False, f"channel_key={channel_key} raw_id={raw_id}"
+
+
 async def _poster_worker(
-    client: TelegramClient,   # already-open client — do NOT open/close here
+    client: TelegramClient,       # primary (designated) poster — do NOT close here
     db: dict,
     file_lock: asyncio.Lock,
     seen_set: set,
+    archived_set: set,
     result_queue: asyncio.Queue,
     counters: dict,
-    bot_client=None,          # bot TelegramClient for sending warnings to owner
+    fallback_clients: list,       # other connected clients to try when primary fails
+    bot_client=None,
     prog_msg_id: int | None = None,
     prog_chat_id: int | None = None,
 ) -> None:
     """
-    Single dedicated poster: uses the DESIGNATED poster account (the one that
-    created / has admin rights to the archive channels) to send all inspection
-    results.  Runs until it receives the None sentinel.
-    The client is opened and managed by run_sorter — do not disconnect here.
+    Dedicated poster worker:
+    - Uses the designated poster client first (has admin rights).
+    - If it fails, tries all fallback clients in order.
+    - If ALL clients fail for a link: marks as seen (to avoid re-inspect loop)
+      but NOT as archived, logs the error, and CONTINUES — never stops the sorter.
+    - On success: marks both seen AND archived.
+    Runs until it receives the None sentinel.
     """
-    try:
-        channel_entities = await _resolve_archive_channels(client, db)
-        if channel_entities:
-            try:
-                save_db(db)
-            except Exception:
-                pass
-        print(
-            f"poster: resolved {len(channel_entities)}/{len(db.get('channels', {}))} archive channels"
-        )
+    # Pre-resolve channel entities for every available client (primary + fallbacks)
+    primary_entities = await _resolve_archive_channels(client, db)
+    fallback_entities: list[tuple] = []
+    for fb_client, fb_name in fallback_clients:
+        try:
+            ents = await _resolve_archive_channels(fb_client, db)
+            fallback_entities.append((fb_client, fb_name, ents))
+        except Exception:
+            fallback_entities.append((fb_client, fb_name, {}))
 
+    n_channels = len(db.get("channels", {}))
+    print(f"[poster] primary resolved {len(primary_entities)}/{n_channels} channels")
+    for _, fb_name, fb_ents in fallback_entities:
+        print(f"[poster] fallback '{fb_name}' resolved {len(fb_ents)}/{n_channels} channels")
+    try:
+        save_db(db)
+    except Exception:
+        pass
+
+    try:
         while True:
             item = await result_queue.get()
 
-            if item is None:  # sentinel — all inspectors finished
+            if item is None:   # sentinel — all inspectors finished
                 break
 
             link   = item["link"]
             action = item["action"]
 
             if action in ("skip", "error"):
+                # Inspector couldn't inspect → mark seen to avoid re-inspecting every run
                 async with file_lock:
                     seen_set.add(normalize_link(link))
                     mark_seen(link)
@@ -766,100 +829,53 @@ async def _poster_worker(
             channel_key = item["channel_key"]
             report      = item["report"]
 
-            # Send to the correct archive channel; warn and stop if unreachable
-            sent = False
-            send_error: str | None = None
-
-            target_entity = channel_entities.get(channel_key)
-            if target_entity is not None:
-                try:
-                    await client.send_message(target_entity, report, parse_mode="md")
-                    sent = True
-                except FloodWaitError as e:
-                    await asyncio.sleep(e.seconds)
-                    try:
-                        await client.send_message(target_entity, report, parse_mode="md")
-                        sent = True
-                    except Exception as _fe:
-                        send_error = str(_fe)
-                        print(f"[poster] send retry failed ({channel_key}): {_fe}")
-                except Exception as _pe:
-                    send_error = str(_pe)
-                    print(f"[poster] send failed via entity ({channel_key}): {_pe}")
-
-            if not sent:
-                raw_id   = db.get("channels", {}).get(channel_key)
-                raw_hash = db.get("channels_hashes", {}).get(channel_key)
-                if raw_id and isinstance(raw_id, int):
-                    target = InputChannel(raw_id, raw_hash) if raw_hash else raw_id
-                    try:
-                        await client.send_message(target, report, parse_mode="md")
-                        sent = True
-                    except FloodWaitError as e:
-                        await asyncio.sleep(e.seconds)
-                        try:
-                            await client.send_message(target, report, parse_mode="md")
-                            sent = True
-                        except Exception as _fe2:
-                            send_error = str(_fe2)
-                            print(f"[poster] send retry (raw_id) failed ({channel_key}): {_fe2}")
-                    except Exception as _pe2:
-                        send_error = str(_pe2)
-                        print(f"[poster] send failed via raw_id ({channel_key}): {_pe2}")
-
-            # If we still couldn't send — warn the user and stop the sorter
-            if not sent:
-                from config import CHANNEL_KEYS as _CK, OWNER_ID as _OID
-                ch_label = _CK.get(channel_key, channel_key)
-                warning = (
-                    f"⚠️ **تعذّر إرسال رابط إلى قناة الأرشيف**\n\n"
-                    f"القناة: **{ch_label}**\n"
-                    f"الخطأ: `{send_error}`\n\n"
-                    f"**تم إيقاف الفرز لحماية التقدم.**\n"
-                    f"تأكد من أن حساب الناشر لديه صلاحية الإدارة في القناة ثم استأنف الفرز."
+            # Try primary poster first, then each fallback client in order.
+            # This removes the hard dependency on a single "poster account".
+            sent      = False
+            used_name = ""
+            all_poster_candidates = [(client, "primary", primary_entities)] + [
+                (fc, fn, fe) for fc, fn, fe in fallback_entities
+            ]
+            for post_client, post_name, post_ents in all_poster_candidates:
+                ok, _err = await _try_send_to_channel(
+                    post_client, post_ents, channel_key, report, db
                 )
-                _stop_buttons = [[Button.inline("▶️ استئناف", b"sort_resume"),
-                                  Button.inline("🏠 القائمة الرئيسية", b"home")]]
-                if bot_client:
-                    # Prefer editing the progress message so chat stays clean
-                    edited = False
-                    if prog_msg_id and prog_chat_id:
-                        try:
-                            await bot_client.edit_message(
-                                prog_chat_id, prog_msg_id, warning,
-                                buttons=_stop_buttons,
-                                parse_mode="md",
-                            )
-                            edited = True
-                        except Exception:
-                            pass
-                    if not edited:
-                        try:
-                            await bot_client.send_message(_OID, warning, parse_mode="md")
-                        except Exception:
-                            pass
-                sorter_ctrl.stop()
-                return
+                if ok:
+                    sent = True
+                    used_name = post_name
+                    break
+                print(f"[poster] {post_name} failed → {channel_key}: {_err}")
 
             async with file_lock:
-                seen_set.add(normalize_link(link))
-                mark_seen(link)
-                ck = f"ch_{channel_key}"
-                db["stats"][ck] = db["stats"].get(ck, 0) + 1
-                if channel_key == "broken":
-                    db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
-                elif channel_key == "invite":
-                    db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
-                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                norm = normalize_link(link)
+                if sent:
+                    # Successfully archived → record in BOTH seen and archived
+                    seen_set.add(norm)
+                    archived_set.add(norm)
+                    mark_seen(link)
+                    mark_archived(link)
+                    ck = f"ch_{channel_key}"
+                    db["stats"][ck] = db["stats"].get(ck, 0) + 1
+                    if channel_key == "broken":
+                        db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
+                    elif channel_key == "invite":
+                        db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
+                        db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                    else:
+                        db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                    db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
+                    print(f"[poster] ✓ {link} → {channel_key} (via {used_name})")
                 else:
-                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-                db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
-                if not sent:
+                    # ALL accounts failed → mark seen (no re-inspect) but NOT archived
+                    # The link will appear in "sent=seen - archived" stats as failed.
+                    seen_set.add(norm)
+                    mark_seen(link)
                     counters["errors"] += 1
+                    print(f"[poster] ✗ ALL accounts failed: {link} → {channel_key}")
                 counters["done"] += 1
 
     except Exception as _poster_crash:
-        # Poster crashed — drain queue so inspector doesn't block forever
+        # Poster crashed — drain queue so inspectors don't block forever
         print(f"[poster] CRASHED: {_poster_crash}")
         while True:
             try:
@@ -951,39 +967,54 @@ async def run_sorter(
         await status_callback("⚠️ لا توجد روابط في القائمة الخام. قم بتشغيل الحصاد أولاً.")
         return
 
-    # ── Load seen set into memory (O(1) lookups instead of O(n) file reads) ───
-    # IMPORTANT: Only load already-ARCHIVED links (global_seen.txt) + joined links.
-    # Do NOT include raw_links.json here — those are the INPUT to the sorter.
-    # Including raw_links in seen_set would cause every link to be skipped (0% bug).
-    seen_set = load_seen_set()
+    # ── Load tracking sets ────────────────────────────────────────────────────
+    #   seen_set     = links already inspected (may or may not have been posted)
+    #   archived_set = links CONFIRMED sent to an archive channel
+    #
+    # PENDING LOGIC:
+    #   A link is skipped if it is in BOTH seen_set AND archived_set
+    #   (i.e. it was inspected AND successfully archived).
+    #   Links in seen_set but NOT archived_set were inspected but NEVER posted
+    #   → they are re-included in pending so the sorter retries posting them.
+    #   If global_archived.txt doesn't exist yet (new install or first run after
+    #   this update) we fall back to using seen_set alone (old behaviour).
+    from database import load_archived_set as _load_archived
+    seen_set     = load_seen_set()
+    archived_set = _load_archived()
+    _has_archived_file = bool(archived_set)   # False on first run / clean install
+
     for lnk in db.get("joined_links", []):
         seen_set.add(normalize_link(lnk))
+        archived_set.add(normalize_link(lnk))   # joined links count as "done"
 
-    # ── Build exclusion sets: source links, archive channel IDs ───────────────
-    # Normalized source links (t.me/... as-is)
-    source_norm: set = {normalize_link(s) for s in db.get("sources", [])}
-    # Archive channel entity IDs (to skip by ID after resolving)
-    skip_entity_ids: set = {v for v in db.get("channels", {}).values() if isinstance(v, int)}
-    # Combined normalized skip set: sources + any t.me username variants stored
+    # Build the "skip" set: links we won't re-process
+    # • If the archived file exists → skip only confirmed-archived links
+    # • Otherwise → fall back to seen_set (backward compat)
+    done_norms: set = archived_set if _has_archived_file else seen_set
+
+    # ── Build exclusion sets: source links ───────────────────────────────────
+    source_norm: set    = {normalize_link(s) for s in db.get("sources", [])}
     skip_normalized: set = set(source_norm)
 
-    # ── Build pending list: from start_from onward, skip already-seen & sources
-    # Also deduplicate within pending itself (preserve first occurrence order)
-    _seen_norms: set = set()
+    # ── Build pending list ────────────────────────────────────────────────────
+    _batch_norms: set = set()
     pending: list = []
     for lnk in raw_links[start_from:]:
         n_ = normalize_link(lnk)
-        if n_ in seen_set or n_ in skip_normalized or n_ in _seen_norms:
+        if n_ in done_norms or n_ in skip_normalized or n_ in _batch_norms:
             continue
-        _seen_norms.add(n_)
+        _batch_norms.add(n_)
         pending.append(lnk)
-    del _seen_norms
+    del _batch_norms
     total = len(pending)
+
+    archived_already = len(archived_set) if _has_archived_file else len(seen_set)
 
     if total == 0:
         await status_callback(
-            "✅ **جميع الروابط تمت معالجتها مسبقاً.**\n\n"
-            "إذا أردت إعادة الفرز، امسح الذاكرة أولاً."
+            f"✅ **جميع الروابط مُرشَفة بالفعل.**\n\n"
+            f"📦 مُرشَف بنجاح: **{archived_already:,}** رابط\n\n"
+            f"إذا أردت إعادة الفرز من البداية، استخدم زر «إعادة الفرز من البداية»."
         )
         return
 
@@ -1047,30 +1078,32 @@ async def run_sorter(
     poster_client = clients_info[poster_idx][0]
     poster_name   = clients_info[poster_idx][1]
 
-    # Inspectors = all accounts EXCEPT the poster (protects the poster from FloodWaits).
-    # If there's only one account, it must do both roles.
+    # Inspectors = all accounts EXCEPT designated poster (shields poster from
+    # inspection FloodWaits).  If only 1 account: it does both roles.
     inspector_clients = [ci for j, ci in enumerate(clients_info) if j != poster_idx]
     if not inspector_clients:
-        inspector_clients = clients_info   # single-account fallback
+        inspector_clients = clients_info
+
+    # Fallback posters = all OTHER clients the poster can try if primary fails
+    fallback_poster_clients = [ci for j, ci in enumerate(clients_info) if j != poster_idx]
 
     await status_callback(
         f"🔄 **الفرز بالتناوب التسلسلي — بدء**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 حسابات: **{n}** | 🔗 روابط: **{total:,}**\n"
+        f"📦 مُرشَف مسبقاً: **{archived_already:,}**\n"
         f"{'🔄 استئناف من حيث توقفنا' if start_from > 0 else '⚡ بدء جديد'}\n"
         f"⚙️ مضاعف الانتظار: **×{FLOOD_MULTIPLIER}** | "
         f"حد الإيقاف الحرج: **{CRITICAL_FLOOD_SECS // 60} دقائق**\n\n"
-        f"📤 **الناشر (أدمن القنوات):** {poster_name}\n"
-        + "\n".join(
-            f"  · **{name}** — فاحص"
-            for _, name in inspector_clients
-        )
+        f"📤 **الناشر الأساسي:** {poster_name}\n"
+        + (f"🔄 **احتياطي:** " + "، ".join(name for _, name in fallback_poster_clients) if fallback_poster_clients else "")
     )
 
     file_lock    = asyncio.Lock()
     extra_links: list[str] = []
     counters     = {"done": 0, "errors": 0, "flood_accounts": {}}
     result_queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
+    skip_entity_ids: set = {v for v in db.get("channels", {}).values() if isinstance(v, int)}
 
     # ── Progress reporter background task ─────────────────────────────────────
     prog_msg_id  = sorter_ctrl.progress_msg_id
@@ -1083,15 +1116,27 @@ async def run_sorter(
         )
     ) if prog_msg_id and prog_chat_id else None
 
-    # ── Start dedicated poster (designated channel-admin account) ─────────────
-    poster_task   = asyncio.create_task(
+    # ── Start dedicated poster ─────────────────────────────────────────────────
+    # Primary = designated poster account (has admin rights).
+    # Fallbacks = every other account (tried in order if primary fails).
+    # The sorter NEVER stops on send failure — it continues with next link.
+    poster_task = asyncio.create_task(
         _poster_worker(
-            poster_client, db, file_lock, seen_set, result_queue, counters,
-            bot_client, prog_msg_id, prog_chat_id,
+            client          = poster_client,
+            db              = db,
+            file_lock       = file_lock,
+            seen_set        = seen_set,
+            archived_set    = archived_set,
+            result_queue    = result_queue,
+            counters        = counters,
+            fallback_clients= fallback_poster_clients,
+            bot_client      = bot_client,
+            prog_msg_id     = prog_msg_id,
+            prog_chat_id    = prog_chat_id,
         )
     )
 
-    # ── Run sequential rotation inspector (helper accounts only) ──────────────
+    # ── Run sequential rotation inspector ─────────────────────────────────────
     try:
         await _sequential_inspector(
             clients_info    = inspector_clients,

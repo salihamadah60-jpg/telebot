@@ -1,6 +1,6 @@
 import json
 import os
-from config import DATA_FILE, SEEN_LINKS_FILE, RAW_LINKS_FILE
+from config import DATA_FILE, SEEN_LINKS_FILE, ARCHIVED_LINKS_FILE, RAW_LINKS_FILE
 
 
 def load_db() -> dict:
@@ -99,6 +99,47 @@ def get_seen_count() -> int:
 def get_raw_count() -> int:
     raw = load_raw_links()
     return len(raw)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Archived-links tracking (separate from seen — ONLY for links actually posted
+# to an archive channel successfully).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def mark_archived(link: str) -> None:
+    """Record that this link was SUCCESSFULLY posted to an archive channel."""
+    clean = normalize_link(link)
+    with open(ARCHIVED_LINKS_FILE, "a", encoding="utf-8") as f:
+        f.write(clean + "\n")
+
+
+def load_archived_set() -> set:
+    """Return a set of normalized links that were successfully archived."""
+    if not os.path.exists(ARCHIVED_LINKS_FILE):
+        return set()
+    with open(ARCHIVED_LINKS_FILE, "r", encoding="utf-8") as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def get_archived_count() -> int:
+    if not os.path.exists(ARCHIVED_LINKS_FILE):
+        return 0
+    with open(ARCHIVED_LINKS_FILE, "r", encoding="utf-8") as f:
+        return sum(1 for line in f if line.strip())
+
+
+def save_archived_set(archived: set) -> None:
+    """Bulk-write the full in-memory archived set to file (atomic)."""
+    import tempfile, shutil
+    tmp_path = ARCHIVED_LINKS_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(sorted(archived)) + "\n")
+    shutil.move(tmp_path, ARCHIVED_LINKS_FILE)
+
+
+def clear_archived() -> None:
+    if os.path.exists(ARCHIVED_LINKS_FILE):
+        os.remove(ARCHIVED_LINKS_FILE)
 
 
 def load_all_known_links(joined_links: list | None = None) -> set:
