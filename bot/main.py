@@ -2567,16 +2567,28 @@ async def inline_text_sort_handler(event):
             summary_lines.append(f"  {emoji} {lnk}")
 
     if known:
-        summary_lines.append(f"\n♻️ **موجود مسبقاً ({len(known)}) — تم تجاهله:**")
+        summary_lines.append(f"\n♻️ **مُرشَف مسبقاً ({len(known)}) — تم تجاهله:**")
         for lnk in known:
             summary_lines.append(f"  • {lnk}")
 
     if errors:
-        summary_lines.append(f"\n❌ **فشل الفرز ({len(errors)}):**")
-        for lnk in errors:
-            summary_lines.append(f"  • {lnk}")
+        summary_lines.append(f"\n❌ **فشل الإرسال ({len(errors)}) — الرابط لم يصل للقناة:**")
+        for item in errors:
+            if isinstance(item, tuple):
+                lnk, err = item
+                summary_lines.append(f"  • {lnk}")
+                if err:
+                    summary_lines.append(f"    `{err[:120]}`")
+            else:
+                summary_lines.append(f"  • {item}")
 
-    await status.edit("\n".join(summary_lines), parse_mode="md")
+    # If any links failed to send, offer the full sorter as a retry path
+    extra_buttons = None
+    if errors:
+        extra_buttons = [[Button.inline("⚡ فرز شامل (إعادة المحاولة)", b"run_sort"),
+                          Button.inline("🏠 القائمة", b"home")]]
+
+    await status.edit("\n".join(summary_lines), buttons=extra_buttons, parse_mode="md")
 
 
 if __name__ == "__main__":

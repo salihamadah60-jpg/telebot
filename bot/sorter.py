@@ -1286,28 +1286,25 @@ async def sort_links_inline(
     if not accounts:
         return result
 
-    # ── Build the master known-set ─────────────────────────────────────────
-    seen_set    = load_seen_set()
-    raw_set     = {normalize_link(l) for l in load_raw_links()}
-    joined_set  = {normalize_link(l) for l in db.get("joined_links", [])}
-    all_known   = seen_set | raw_set | joined_set
+    # ── Build the seen set (= already archived successfully) ──────────────
+    # We only skip links that were ALREADY SENT to an archive channel
+    # (i.e., in seen_set).  Links that were merely harvested (in raw_links.json)
+    # but never actually posted must still be sorted and sent here.
+    seen_set   = load_seen_set()
+    batch_seen = set()   # dedup within this single paste batch
 
-    # ── Separate new vs already-known ─────────────────────────────────────
+    # ── Separate new vs already-archived ──────────────────────────────────
     new_links: list[str] = []
     for link in links:
         norm = normalize_link(link)
-        if norm in all_known:
+        if norm in seen_set or norm in batch_seen:
             result["already_known"].append(link)
         else:
             new_links.append(link)
-            all_known.add(norm)   # prevent intra-batch duplicates
+            batch_seen.add(norm)   # prevent intra-batch duplicates
 
     if not new_links:
         return result
-
-    # ── Add new links to raw_links.json so they survive a bot restart ─────
-    existing_raw = load_raw_links()
-    save_raw_links(existing_raw + new_links)
 
     # ── Open the designated poster account first (has admin rights to channels) ─
     # Fall back to the first account in the list if poster_session is unavailable.
@@ -1373,7 +1370,8 @@ async def sort_links_inline(
                 report      = build_report(link, info, specialty, channel_key, client_name)
 
                 # ── Post to archive channel ────────────────────────────────
-                sent = False
+                sent       = False
+                send_error = ""
                 target_entity = channel_entities.get(channel_key)
                 if target_entity is not None:
                     try:
@@ -1384,11 +1382,12 @@ async def sort_links_inline(
                         try:
                             await client.send_message(target_entity, report, parse_mode="md")
                             sent = True
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
+                        except Exception as e:
+                            send_error = str(e)
+                    except Exception as e:
+                        send_error = str(e)
 
+                # Fallback: try via raw channel ID + access hash
                 if not sent:
                     raw_id   = db.get("channels", {}).get(channel_key)
                     raw_hash = db.get("channels_hashes", {}).get(channel_key)
@@ -1397,29 +1396,29 @@ async def sort_links_inline(
                         try:
                             await client.send_message(target, report, parse_mode="md")
                             sent = True
-                        except Exception:
-                            pass
-
-                # ── Mark seen + update stats ───────────────────────────────
-                seen_set.add(normalize_link(link))
-                mark_seen(link)
-                db["stats"][f"ch_{channel_key}"] = db["stats"].get(f"ch_{channel_key}", 0) + 1
-                if channel_key == "broken":
-                    db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
-                elif channel_key == "invite":
-                    db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
-                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-                else:
-                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-                db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
+                        except Exception as e:
+                            send_error = str(e)
 
                 if sent:
+                    # ── Mark seen + update stats ONLY on success ───────────
+                    seen_set.add(normalize_link(link))
+                    mark_seen(link)
+                    db["stats"][f"ch_{channel_key}"] = db["stats"].get(f"ch_{channel_key}", 0) + 1
+                    if channel_key == "broken":
+                        db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
+                    elif channel_key == "invite":
+                        db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
+                        db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                    else:
+                        db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                    db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
                     result["posted"].append((link, channel_key))
                 else:
-                    result["errors"].append(link)
+                    print(f"[inline_sort] FAILED to send {link} → {channel_key}: {send_error}")
+                    result["errors"].append((link, send_error))
 
             except Exception as exc:
-                result["errors"].append(link)
+                result["errors"].append((link, str(exc)))
                 print(f"[inline_sort] error on {link}: {exc}")
 
         save_db(db)
