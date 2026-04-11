@@ -14,9 +14,12 @@ SEEN_LINKS_FILE  = "global_seen.txt"      # inspected (may or may not have been 
 ARCHIVED_LINKS_FILE = "global_archived.txt"  # ONLY links actually sent to archive channels
 RAW_LINKS_FILE   = "raw_links.json"
 SESSIONS_DIR     = "sessions"
+SORTED_DIR       = "sorted"
 
 if not os.path.exists(SESSIONS_DIR):
     os.makedirs(SESSIONS_DIR)
+if not os.path.exists(SORTED_DIR):
+    os.makedirs(SORTED_DIR)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # THE 6 ARCHIVE CHANNELS  (type-based, not specialty-based)

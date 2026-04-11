@@ -1,6 +1,16 @@
 import json
 import os
-from config import DATA_FILE, SEEN_LINKS_FILE, ARCHIVED_LINKS_FILE, RAW_LINKS_FILE
+from config import DATA_FILE, SEEN_LINKS_FILE, ARCHIVED_LINKS_FILE, RAW_LINKS_FILE, SORTED_DIR
+
+SORTED_FILES = {
+    "channels": f"{SORTED_DIR}/channels.txt",
+    "groups":   f"{SORTED_DIR}/groups.txt",
+    "bots":     f"{SORTED_DIR}/bots.txt",
+    "invite":   f"{SORTED_DIR}/invite.txt",
+    "addlist":  f"{SORTED_DIR}/addlist.txt",
+    "other":    f"{SORTED_DIR}/other.txt",
+    "broken":   f"{SORTED_DIR}/broken.txt",
+}
 
 
 def load_db() -> dict:
@@ -140,6 +150,60 @@ def save_archived_set(archived: set) -> None:
 def clear_archived() -> None:
     if os.path.exists(ARCHIVED_LINKS_FILE):
         os.remove(ARCHIVED_LINKS_FILE)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Locally-sorted link files (written during sorting, cleared after publishing)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def save_sorted_link(channel_key: str, link: str) -> None:
+    """Append a sorted link to the appropriate category file."""
+    filepath = SORTED_FILES.get(channel_key)
+    if not filepath:
+        return
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write(link.strip() + "\n")
+
+
+def load_sorted_links(channel_key: str) -> list:
+    """Load all locally-sorted links for a category (deduplicated, ordered)."""
+    filepath = SORTED_FILES.get(channel_key)
+    if not filepath or not os.path.exists(filepath):
+        return []
+    seen = set()
+    result = []
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            lnk = line.strip()
+            if lnk and lnk not in seen:
+                seen.add(lnk)
+                result.append(lnk)
+    return result
+
+
+def clear_sorted_links(channel_key: str | None = None) -> None:
+    """Remove sorted files — all categories or a specific one."""
+    if channel_key:
+        filepath = SORTED_FILES.get(channel_key)
+        if filepath and os.path.exists(filepath):
+            os.remove(filepath)
+    else:
+        for filepath in SORTED_FILES.values():
+            if os.path.exists(filepath):
+                os.remove(filepath)
+
+
+def get_sorted_counts() -> dict:
+    """Return {channel_key: link_count} for all locally-sorted categories."""
+    counts = {}
+    for key, filepath in SORTED_FILES.items():
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                counts[key] = sum(1 for line in f if line.strip())
+        else:
+            counts[key] = 0
+    return counts
 
 
 def load_all_known_links(joined_links: list | None = None) -> set:
