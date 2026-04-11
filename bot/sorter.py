@@ -497,6 +497,7 @@ async def _interruptible_sleep(seconds: float) -> bool:
 async def _sequential_inspector(
     clients_info: list,        # [(TelegramClient, name), ...] — all open, all alive
     pending: list,             # ordered list of links still to process
+    pending_raw_idx: list,     # parallel list: raw_links index of each pending item
     file_lock: asyncio.Lock,
     seen_set: set,
     extra_links: list,
@@ -602,6 +603,7 @@ async def _sequential_inspector(
                 seen_set.add(norm)
             await result_queue.put({"link": link, "action": "skip"})
             link_idx += 1
+            counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
             continue
 
         await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
@@ -622,6 +624,7 @@ async def _sequential_inspector(
             if entity_id and (entity_id in skip_entity_ids or entity_id == BOT_ID):
                 await result_queue.put({"link": link, "action": "skip"})
                 link_idx += 1
+                counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
                 continue
 
             med = (
@@ -648,6 +651,7 @@ async def _sequential_inspector(
                 "channel_key": channel_key, "report": report,
             })
             link_idx += 1   # ✅ success — advance to next link
+            counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
 
         except FloodWaitError as e:
             flood_secs = e.seconds
@@ -707,6 +711,7 @@ async def _sequential_inspector(
         except Exception:
             await result_queue.put({"link": link, "action": "error"})
             link_idx += 1
+            counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
 
     # ── mark all done ─────────────────────────────────────────────────────────
     async with file_lock:
@@ -999,12 +1004,14 @@ async def run_sorter(
     # ── Build pending list ────────────────────────────────────────────────────
     _batch_norms: set = set()
     pending: list = []
-    for lnk in raw_links[start_from:]:
+    pending_raw_idx: list = []
+    for _raw_i, lnk in enumerate(raw_links[start_from:]):
         n_ = normalize_link(lnk)
         if n_ in done_norms or n_ in skip_normalized or n_ in _batch_norms:
             continue
         _batch_norms.add(n_)
         pending.append(lnk)
+        pending_raw_idx.append(start_from + _raw_i)
     del _batch_norms
     total = len(pending)
 
@@ -1141,6 +1148,7 @@ async def run_sorter(
         await _sequential_inspector(
             clients_info    = inspector_clients,
             pending         = pending,
+            pending_raw_idx = pending_raw_idx,
             file_lock       = file_lock,
             seen_set        = seen_set,
             extra_links     = extra_links,
@@ -1175,7 +1183,7 @@ async def run_sorter(
 
     # ── Save final progress index ─────────────────────────────────────────────
     async with file_lock:
-        db["progress"]["last_sorted_index"] = start_from + counters["done"]
+        db["progress"]["last_sorted_index"] = counters.get("last_raw_idx", start_from)
         save_db(db)
 
     # ── Handle extra addlist-derived links ────────────────────────────────────
