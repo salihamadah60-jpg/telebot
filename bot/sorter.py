@@ -70,7 +70,7 @@ import state as sorter_ctrl
 # ─────────────────────────────────────────────────────────────────────────────
 # Account-rotation strategy constants
 # ─────────────────────────────────────────────────────────────────────────────
-FLOOD_MULTIPLIER     = 3     # wait 3× the FloodWait → "safety multiplier"
+FLOOD_MULTIPLIER     = 2     # wait 2× the FloodWait → "safety multiplier"
 CRITICAL_FLOOD_SECS  = 600   # 10-minute FloodWait → triggers system-wide pause
 CRITICAL_PAUSE_SECS  = 1200  # 20-minute pause applied to ALL accounts on critical
 
