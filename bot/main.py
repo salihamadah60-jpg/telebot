@@ -135,6 +135,8 @@ def owner_only(func):
                 await event.answer("⚠️ هناك عملية جارية. أنهها أو انتظر.", alert=True)
             except Exception:
                 pass
+        except FloodWaitError as e:
+            print(f"[FloodWait] {func.__name__}: {e.seconds}s — skipping response")
         except Exception as e:
             try:
                 await event.answer("❌ حدث خطأ، حاول مجدداً.", alert=True)
@@ -180,6 +182,8 @@ def admin_only(func):
                 await event.answer("⚠️ هناك عملية جارية. أنهها أو انتظر.", alert=True)
             except Exception:
                 pass
+        except FloodWaitError as e:
+            print(f"[FloodWait] {func.__name__}: {e.seconds}s — skipping response")
         except Exception as e:
             try:
                 await event.answer("❌ حدث خطأ، حاول مجدداً.", alert=True)
@@ -594,28 +598,31 @@ async def start_handler(event):
     if _is_stale_event(event):
         return
     db.update(load_db())
-    if _is_authorized(event.sender_id):
-        text, buttons = build_dashboard(db)
-        await event.respond(text, buttons=buttons, parse_mode="md")
-        return
+    try:
+        if _is_authorized(event.sender_id):
+            text, buttons = build_dashboard(db)
+            await event.respond(text, buttons=buttons, parse_mode="md")
+            return
 
-    user_id_str = str(event.sender_id)
-    if user_id_str in db.get("pending_requests", {}):
+        user_id_str = str(event.sender_id)
+        if user_id_str in db.get("pending_requests", {}):
+            await event.respond(
+                "⏳ **طلبك قيد المراجعة**\n\nسيتم إشعارك فور قبول أو رفض طلبك من المالك.",
+                parse_mode="md",
+            )
+            return
+
+        sender = await event.get_sender()
+        name = getattr(sender, "first_name", "") or ""
         await event.respond(
-            "⏳ **طلبك قيد المراجعة**\n\nسيتم إشعارك فور قبول أو رفض طلبك من المالك.",
+            f"👋 مرحباً {name}!\n\n"
+            "هذا البوت خاص ويتطلب موافقة المالك للوصول.\n\n"
+            "هل تريد إرسال طلب وصول للمالك؟",
+            buttons=[[Button.inline("📨 إرسال طلب الوصول", f"req_{event.sender_id}".encode())]],
             parse_mode="md",
         )
-        return
-
-    sender = await event.get_sender()
-    name = getattr(sender, "first_name", "") or ""
-    await event.respond(
-        f"👋 مرحباً {name}!\n\n"
-        "هذا البوت خاص ويتطلب موافقة المالك للوصول.\n\n"
-        "هل تريد إرسال طلب وصول للمالك؟",
-        buttons=[[Button.inline("📨 إرسال طلب الوصول", f"req_{event.sender_id}".encode())]],
-        parse_mode="md",
-    )
+    except FloodWaitError as e:
+        print(f"[FloodWait] start_handler: {e.seconds}s — skipping response")
 
 
 @bot.on(events.CallbackQuery(data=b"home"))

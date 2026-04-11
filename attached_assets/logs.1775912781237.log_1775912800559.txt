@@ -1,0 +1,48 @@
+2026-04-11T13:04:25.348191222Z [inf]  🚀 Starting bot keep-alive loop...
+2026-04-11T13:04:25.348198330Z [inf]  📝 Logs: /app/bot/bot.log
+2026-04-11T13:04:25.348203063Z [inf]  Press Ctrl+C to stop.
+2026-04-11T13:04:25.348208395Z [inf]  
+2026-04-11T13:04:25.348212814Z [inf]  2026-04-11 13:04:25 [KEEP-ALIVE] Starting bot...
+2026-04-11T13:04:25.426843905Z [inf]  Starting Container
+2026-04-11T13:04:25.807211926Z [inf]  🌐 HTTP health-check server started on port 8080
+2026-04-11T13:04:28.576550186Z [inf]  🤖 البوت يعمل... OWNER_ID=8312427070 | أرسل /start في تيليجرام للبدء.
+2026-04-11T13:05:18.932966610Z [inf]  telethon.errors.rpcerrorlist.FloodWaitError: A wait of 18122 seconds is required (caused by SendMessageRequest)
+2026-04-11T13:05:18.933056610Z [inf]  Unhandled exception on start_handler
+2026-04-11T13:05:18.933063210Z [inf]  Traceback (most recent call last):
+2026-04-11T13:05:18.933070333Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/client/updates.py", line 605, in _dispatch_update
+2026-04-11T13:05:18.933076832Z [inf]      await callback(event)
+2026-04-11T13:05:18.933082836Z [inf]    File "/app/bot/main.py", line 599, in start_handler
+2026-04-11T13:05:18.933089529Z [inf]      await event.respond(text, buttons=buttons, parse_mode="md")
+2026-04-11T13:05:18.933095500Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/tl/custom/message.py", line 824, in respond
+2026-04-11T13:05:18.933102327Z [inf]      return await self._client.send_message(
+2026-04-11T13:05:18.933109090Z [inf]             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-11T13:05:18.933115328Z [inf]          await self.get_input_chat(), *args, **kwargs)
+2026-04-11T13:05:18.933121677Z [inf]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-11T13:05:18.933128364Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/client/messages.py", line 927, in send_message
+2026-04-11T13:05:18.933134515Z [inf]      result = await self(request)
+2026-04-11T13:05:18.933140454Z [inf]               ^^^^^^^^^^^^^^^^^^^
+2026-04-11T13:05:18.933144894Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/client/users.py", line 30, in __call__
+2026-04-11T13:05:18.933151981Z [inf]      return await self._call(self._sender, request, ordered=ordered)
+2026-04-11T13:05:18.933156764Z [inf]             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-11T13:05:18.933161101Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/client/users.py", line 57, in _call
+2026-04-11T13:05:18.933166442Z [inf]      raise errors.FloodWaitError(request=r, capture=diff)
+2026-04-11T13:05:18.934287027Z [inf]  Unhandled exception on start_handler
+2026-04-11T13:05:18.934287183Z [inf]      raise errors.FloodWaitError(request=r, capture=diff)
+2026-04-11T13:05:18.934296723Z [inf]  telethon.errors.rpcerrorlist.FloodWaitError: A wait of 18114 seconds is required (caused by SendMessageRequest)
+2026-04-11T13:05:18.934298226Z [inf]  Traceback (most recent call last):
+2026-04-11T13:05:18.934299619Z [inf]          await self.get_input_chat(), *args, **kwargs)
+2026-04-11T13:05:18.934305798Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/client/updates.py", line 605, in _dispatch_update
+2026-04-11T13:05:18.934313785Z [inf]      await callback(event)
+2026-04-11T13:05:18.934314240Z [inf]          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-11T13:05:18.934321019Z [inf]    File "/app/bot/main.py", line 599, in start_handler
+2026-04-11T13:05:18.934328218Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/client/messages.py", line 927, in send_message
+2026-04-11T13:05:18.934329279Z [inf]      await event.respond(text, buttons=buttons, parse_mode="md")
+2026-04-11T13:05:18.934336829Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/tl/custom/message.py", line 824, in respond
+2026-04-11T13:05:18.934342811Z [inf]      result = await self(request)
+2026-04-11T13:05:18.934343428Z [inf]      return await self._client.send_message(
+2026-04-11T13:05:18.934353923Z [inf]             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-11T13:05:18.934354430Z [inf]               ^^^^^^^^^^^^^^^^^^^
+2026-04-11T13:05:18.934365137Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/client/users.py", line 30, in __call__
+2026-04-11T13:05:18.934374923Z [inf]      return await self._call(self._sender, request, ordered=ordered)
+2026-04-11T13:05:18.934383216Z [inf]             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+2026-04-11T13:05:18.934392633Z [inf]    File "/app/.venv/lib/python3.13/site-packages/telethon/client/users.py", line 57, in _call
