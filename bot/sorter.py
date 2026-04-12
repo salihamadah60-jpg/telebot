@@ -58,6 +58,7 @@ from database import (
     save_sorted_link,
     load_sorted_links,
     clear_sorted_links,
+    save_whatsapp_links,
     SORTED_FILES,
 )
 from config import (
@@ -78,6 +79,11 @@ FLOOD_MULTIPLIER     = 2     # wait 2× the FloodWait → "safety multiplier"
 CRITICAL_FLOOD_SECS  = 600   # 10-minute FloodWait → triggers system-wide pause
 CRITICAL_PAUSE_SECS  = 1200  # 20-minute pause applied to ALL accounts on critical
 LINKS_PER_BATCH      = 40    # links bundled into a single numbered publish message
+_WHATSAPP_RE = re.compile(r"^(?:https?://)?(?:chat\.whatsapp\.com|wa\.me)/", re.IGNORECASE)
+
+
+def is_whatsapp_link(link: str) -> bool:
+    return bool(_WHATSAPP_RE.match(link.strip()))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -725,55 +731,6 @@ async def _sequential_inspector(
             fa[name] = "✅"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Dedicated poster — one account, reads from queue, sends everything
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def _try_send_to_channel(
-    client: TelegramClient,
-    channel_entities: dict,
-    channel_key: str,
-    report: str,
-    db: dict,
-) -> tuple[bool, str]:
-    """
-    Try to send `report` to the archive channel for `channel_key` using `client`.
-    Returns (sent: bool, error_msg: str).
-    Attempts: resolved entity first, then raw InputChannel fallback.
-    Handles one FloodWait retry per attempt.
-    """
-    async def _send(target) -> bool:
-        try:
-            await client.send_message(target, report, parse_mode="md")
-            return True
-        except FloodWaitError as fw:
-            wait = min(fw.seconds, 60)   # cap sleep at 60 s per attempt
-            await asyncio.sleep(wait)
-            try:
-                await client.send_message(target, report, parse_mode="md")
-                return True
-            except Exception:
-                return False
-        except Exception:
-            return False
-
-    # Try resolved entity
-    target_entity = channel_entities.get(channel_key)
-    if target_entity is not None:
-        if await _send(target_entity):
-            return True, ""
-
-    # Fallback: raw channel ID + stored access hash
-    raw_id   = db.get("channels", {}).get(channel_key)
-    raw_hash = db.get("channels_hashes", {}).get(channel_key)
-    if raw_id and isinstance(raw_id, int):
-        target = InputChannel(raw_id, raw_hash) if raw_hash else raw_id
-        if await _send(target):
-            return True, ""
-
-    return False, f"channel_key={channel_key} raw_id={raw_id}"
-
-
 async def _file_accumulator_worker(
     file_lock: asyncio.Lock,
     seen_set: set,
@@ -1400,17 +1357,18 @@ async def sort_links_inline(
     status_callback=None,
 ) -> dict:
     """
-    Immediately inspect and post a small list of links to archive channels.
+    Immediately inspect a small list of links and save them to local files.
     Used for links pasted directly in chat (not via file or full harvest flow).
 
     Returns:
         {
-            "posted":        [(link, channel_key), ...],
+            "saved":         [(link, channel_key), ...],
             "already_known": [link, ...],
+            "whatsapp":      [link, ...],
             "errors":        [link, ...],
         }
     """
-    result: dict = {"posted": [], "already_known": [], "errors": []}
+    result: dict = {"saved": [], "posted": [], "already_known": [], "whatsapp": [], "errors": []}
 
     if not accounts:
         return result
@@ -1424,13 +1382,21 @@ async def sort_links_inline(
 
     # ── Separate new vs already-archived ──────────────────────────────────
     new_links: list[str] = []
+    whatsapp_links: list[str] = []
     for link in links:
+        if is_whatsapp_link(link):
+            whatsapp_links.append(link)
+            continue
         norm = normalize_link(link)
         if norm in seen_set or norm in batch_seen:
             result["already_known"].append(link)
         else:
             new_links.append(link)
             batch_seen.add(norm)   # prevent intra-batch duplicates
+
+    if whatsapp_links:
+        saved_wa = save_whatsapp_links(whatsapp_links)
+        result["whatsapp"] = whatsapp_links[:saved_wa] if saved_wa else []
 
     if not new_links:
         return result
@@ -1464,8 +1430,6 @@ async def sort_links_inline(
         return result
 
     try:
-        channel_entities = await _resolve_archive_channels(client, db)
-
         for link in new_links:
             if status_callback:
                 try:
@@ -1496,55 +1460,20 @@ async def sort_links_inline(
                 is_med      = is_medical(info.get("title", "") + " " + info.get("bio", "")) if info.get("ok") else False
                 specialty   = classify_specialty(info.get("title", "") + " " + info.get("bio", "")) if info.get("ok") else "غير مصنف"
                 channel_key = route_to_channel(link, info, is_add, is_med)
-                report      = build_report(link, info, specialty, channel_key, client_name)
-
-                # ── Post to archive channel ────────────────────────────────
-                sent       = False
-                send_error = ""
-                target_entity = channel_entities.get(channel_key)
-                if target_entity is not None:
-                    try:
-                        await client.send_message(target_entity, report, parse_mode="md")
-                        sent = True
-                    except FloodWaitError as fw:
-                        await asyncio.sleep(fw.seconds)
-                        try:
-                            await client.send_message(target_entity, report, parse_mode="md")
-                            sent = True
-                        except Exception as e:
-                            send_error = str(e)
-                    except Exception as e:
-                        send_error = str(e)
-
-                # Fallback: try via raw channel ID + access hash
-                if not sent:
-                    raw_id   = db.get("channels", {}).get(channel_key)
-                    raw_hash = db.get("channels_hashes", {}).get(channel_key)
-                    if raw_id and isinstance(raw_id, int):
-                        target = InputChannel(raw_id, raw_hash) if raw_hash else raw_id
-                        try:
-                            await client.send_message(target, report, parse_mode="md")
-                            sent = True
-                        except Exception as e:
-                            send_error = str(e)
-
-                if sent:
-                    # ── Mark seen + update stats ONLY on success ───────────
-                    seen_set.add(normalize_link(link))
-                    mark_seen(link)
-                    db["stats"][f"ch_{channel_key}"] = db["stats"].get(f"ch_{channel_key}", 0) + 1
-                    if channel_key == "broken":
-                        db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
-                    elif channel_key == "invite":
-                        db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
-                        db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-                    else:
-                        db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
-                    db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
-                    result["posted"].append((link, channel_key))
+                save_sorted_link(channel_key, link)
+                seen_set.add(normalize_link(link))
+                mark_seen(link)
+                db["stats"][f"ch_{channel_key}"] = db["stats"].get(f"ch_{channel_key}", 0) + 1
+                if channel_key == "broken":
+                    db["stats"]["total_broken"] = db["stats"].get("total_broken", 0) + 1
+                elif channel_key == "invite":
+                    db["stats"]["total_invite"] = db["stats"].get("total_invite", 0) + 1
+                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
                 else:
-                    print(f"[inline_sort] FAILED to send {link} → {channel_key}: {send_error}")
-                    result["errors"].append((link, send_error))
+                    db["stats"]["total_sorted"] = db["stats"].get("total_sorted", 0) + 1
+                db["stats"]["total_found"] = db["stats"].get("total_found", 0) + 1
+                result["saved"].append((link, channel_key))
+                result["posted"].append((link, channel_key))
 
             except Exception as exc:
                 result["errors"].append((link, str(exc)))

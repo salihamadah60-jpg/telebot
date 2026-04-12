@@ -131,6 +131,8 @@ cd bot && python -u main.py    # direct run (also has reconnect loop)
 ```
 
 ### Recent Fixes (March 2026)
+- Sorting/publishing workflow update: full sorting and inline sorting now save categorized Telegram links into local `bot/sorted/*.txt` files first. Archive channels are updated only when the owner presses “📤 نشر إلى القنوات”, which publishes batched numbered messages.
+- WhatsApp link export: WhatsApp links are stored separately in `bot/whatsapp_links.txt` and can be downloaded from the bot with “تنزيل ملف روابط الواتساب”.
 - **Persistent progress bar**: Sorting now sends ONE message that gets edited each batch, showing a visual `▓▓▓▓░░` bar with %, counts, and Stop/Pause buttons. No more message spam.
 - **Stop/Pause/Resume** for both sorting AND harvesting.
 - **Sorting logic fix**: Invite links (`t.me/+...`) that can't be accessed are now correctly routed to the "دعوات" archive (not falsely counted as "broken"). "Broken" now means truly deleted/invalid usernames only.

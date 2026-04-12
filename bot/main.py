@@ -28,6 +28,8 @@ from database import (
     save_raw_links,
     normalize_link,
     load_all_known_links,
+    save_whatsapp_links,
+    get_whatsapp_count,
 )
 from account_manager import AccountManager
 from channel_setup import (
@@ -40,7 +42,8 @@ from channel_setup import (
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.errors import UserNotParticipantError, ChannelPrivateError
 from harvester import harvest_sources
-from sorter import run_sorter, clear_archive_channels, sort_links_inline
+from sorter import run_sorter, clear_archive_channels, sort_links_inline, publish_sorted_links
+from config import WHATSAPP_LINKS_FILE
 from joiner import run_smart_joiner
 from searcher import run_smart_discovery
 import state as sorter_ctrl
@@ -1613,8 +1616,10 @@ async def run_sort_handler(event):
                 f"🌐 غير طبي: **{s.get('ch_other', 0):,}**\n"
                 f"💀 تالفة: **{s.get('ch_broken', 0):,}**",
                 buttons=[
+                    [Button.inline("📤 نشر إلى القنوات", b"publish_sorted")],
                     [Button.inline("🧠 اكتشاف ذكي ◄", b"smart_discover"),
                      Button.inline("🤝 انضمام ذكي ◄",  b"smart_join")],
+                    [Button.inline("تنزيل ملف روابط الواتساب", b"download_whatsapp_links")],
                     nav_row(),
                 ],
                 parse_mode="md",
@@ -1663,6 +1668,57 @@ async def sort_stop_handler(event):
     await event.answer("⏹ جاري الإيقاف وحفظ التقدم...")
     sorter_ctrl.stop()
     await event.answer("⏹ تم إيقاف الفرز. التقدم محفوظ — يمكن الاستئناف لاحقاً.", alert=True)
+
+
+@bot.on(events.CallbackQuery(data=b"publish_sorted"))
+@owner_only
+async def publish_sorted_handler(event):
+    await event.answer("📤 جاري النشر...")
+    accounts = await _get_authorized_sessions(db.get("accounts", []))
+    prog_msg_id = event.message_id
+    await event.edit("📤 **جاري نشر الروابط المرتبة إلى القنوات...**", parse_mode="md")
+
+    async def _upd(text_upd: str):
+        try:
+            await bot.edit_message(OWNER_ID, prog_msg_id, text_upd, parse_mode="md")
+        except Exception:
+            pass
+
+    results = await publish_sorted_links(
+        accounts=accounts,
+        db=db,
+        status_callback=_upd,
+        bot_client=bot,
+        prog_msg_id=prog_msg_id,
+        prog_chat_id=OWNER_ID,
+    )
+    sent = sum(v.get("sent", 0) for v in results.values())
+    failed = sum(v.get("failed", 0) for v in results.values())
+    await bot.edit_message(
+        OWNER_ID,
+        prog_msg_id,
+        f"✅ **اكتمل النشر**\n\n📤 تم إرسال: **{sent:,}** رابط\n⚠️ بقي غير منشور: **{failed:,}** رابط",
+        buttons=[
+            [Button.inline("تنزيل ملف روابط الواتساب", b"download_whatsapp_links")],
+            nav_row(),
+        ],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.CallbackQuery(data=b"download_whatsapp_links"))
+@owner_only
+async def download_whatsapp_links_handler(event):
+    await event.answer()
+    count = get_whatsapp_count()
+    if count == 0 or not os.path.exists(WHATSAPP_LINKS_FILE):
+        await event.answer("لا توجد روابط واتساب محفوظة حتى الآن.", alert=True)
+        return
+    await bot.send_file(
+        OWNER_ID,
+        WHATSAPP_LINKS_FILE,
+        caption=f"تنزيل ملف روابط الواتساب — {count:,} رابط",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2446,22 +2502,27 @@ async def file_import_handler(event):
                 seen_this_file.add(norm)
                 known.add(norm)
 
-        # ── Append new links to raw pipeline ──────────────────────────────
-        if new_links:
+        whatsapp_links = [link for link in new_links if re.match(r"^(?:https?://)?(?:chat\.whatsapp\.com|wa\.me)/", link, re.IGNORECASE)]
+        telegram_links = [link for link in new_links if link not in whatsapp_links]
+        saved_whatsapp = save_whatsapp_links(whatsapp_links)
+
+        if telegram_links:
             existing = load_raw_links()
-            save_raw_links(existing + new_links)
+            save_raw_links(existing + telegram_links)
 
         dupes = len(found_links) - len(new_links)
         await status.edit(
             f"📂 **استيراد مكتمل: `{fname}`**\n\n"
             f"🔍 روابط مُكتشفة في الملف: **{len(found_links):,}**\n"
-            f"✅ جديدة أُضيفت للمعالجة: **{len(new_links):,}**\n"
+            f"✅ تيليجرام جديدة أُضيفت للمعالجة: **{len(telegram_links):,}**\n"
+            f"🟢 واتساب حُفظت في الملف: **{saved_whatsapp:,}**\n"
             f"♻️ تكرارات تجاهلها: **{dupes:,}**\n\n"
             + (
                 "▶️ شغّل الفرز لأرشفة الروابط الجديدة."
-                if new_links else
+                if telegram_links else
                 "ℹ️ جميع الروابط موجودة مسبقاً — لا جديد."
-            )
+            ),
+            buttons=[[Button.inline("تنزيل ملف روابط الواتساب", b"download_whatsapp_links")], nav_row()] if get_whatsapp_count() else None,
         )
 
     except Exception as e:
@@ -2494,8 +2555,8 @@ _CHANNEL_KEY_EMOJI = {
 async def inline_text_sort_handler(event):
     """
     Triggered when the owner sends a plain text message (no file) containing
-    at least one t.me link.  Sorts each link immediately: deduplicates, posts
-    to the correct archive channel, marks as seen, then deletes the original
+    at least one t.me link.  Sorts each link immediately: deduplicates, saves
+    to the correct local category file, marks as seen, then deletes the original
     user message from chat.
     """
     msg = event.message
@@ -2562,13 +2623,19 @@ async def inline_text_sort_handler(event):
     # ── Build summary ──────────────────────────────────────────────────────
     posted   = result["posted"]
     known    = result["already_known"]
+    whatsapp = result.get("whatsapp", [])
     errors   = result["errors"]
     total    = len(links)
 
     summary_lines = [f"✅ **اكتمل الفرز الفوري — {total} رابط**\n"]
 
     if posted:
-        summary_lines.append(f"📬 **أُرشف ({len(posted)}):**")
+        summary_lines.append(f"💾 **حُفظ محلياً وجاهز للنشر ({len(posted)}):**")
+    if whatsapp:
+        summary_lines.append(f"\n🟢 **روابط واتساب حُفظت في الملف ({len(whatsapp)}):**")
+        for lnk in whatsapp:
+            summary_lines.append(f"  • {lnk}")
+
         for lnk, ck in posted:
             emoji = _CHANNEL_KEY_EMOJI.get(ck, "📌")
             summary_lines.append(f"  {emoji} {lnk}")
@@ -2589,11 +2656,13 @@ async def inline_text_sort_handler(event):
             else:
                 summary_lines.append(f"  • {item}")
 
-    # If any links failed to send, offer the full sorter as a retry path
-    extra_buttons = None
+    extra_buttons = [
+        [Button.inline("📤 نشر إلى القنوات", b"publish_sorted")],
+        [Button.inline("تنزيل ملف روابط الواتساب", b"download_whatsapp_links")],
+        [Button.inline("🏠 القائمة", b"home")],
+    ]
     if errors:
-        extra_buttons = [[Button.inline("⚡ فرز شامل (إعادة المحاولة)", b"run_sort"),
-                          Button.inline("🏠 القائمة", b"home")]]
+        extra_buttons.insert(0, [Button.inline("⚡ فرز شامل (إعادة المحاولة)", b"run_sort")])
 
     await status.edit("\n".join(summary_lines), buttons=extra_buttons, parse_mode="md")
 

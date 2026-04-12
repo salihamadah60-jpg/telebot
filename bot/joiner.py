@@ -37,7 +37,7 @@ from config import (
     JOIN_DELAY_MIN,
     JOIN_DELAY_MAX,
 )
-from database import save_db, load_raw_links, save_raw_links, load_all_known_links
+from database import save_db, load_raw_links, save_raw_links, load_all_known_links, save_whatsapp_links
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Link-detection regexes for post-join scanning
@@ -133,7 +133,7 @@ async def _scan_joined_for_new_links(
     """
     Scan the last `scan_limit` messages of a newly-joined chat for:
       • Telegram links  → added to raw_links.json for the normal pipeline
-      • WhatsApp links  → posted to on-demand wa_discovery channel
+      • WhatsApp links  → saved to whatsapp_links.txt
     TG links are also appended raw_links.json for the sorter to classify later.
     """
     try:
@@ -172,21 +172,10 @@ async def _scan_joined_for_new_links(
             f"📡 **مسح ما بعد الانضمام:** {len(new_tg)} رابط تيليجرام جديد أُضيف للمعالجة"
         )
 
-    # ── Post WA links to on-demand discovery channel ──────────────────────────
     if new_wa:
-        ch_id = await _get_or_create_discovery_channel(client, db, "wa_discovery")
-        if ch_id:
-            try:
-                wa_text = (
-                    "📱 **روابط واتساب مكتشفة جديدة**\n\n"
-                    + "\n".join(f"• {l}" for l in new_wa[:30])
-                    + (f"\n…و{len(new_wa) - 30} رابط إضافي" if len(new_wa) > 30 else "")
-                )
-                await client.send_message(ch_id, wa_text)
-            except Exception:
-                pass
+        saved_wa = save_whatsapp_links(new_wa)
         await status_callback(
-            f"💬 **واتساب:** {len(new_wa)} رابط اكتُشف → أُرسل للقناة المخصصة"
+            f"💬 **واتساب:** {saved_wa} رابط اكتُشف → حُفظ في ملف روابط الواتساب"
         )
 
 

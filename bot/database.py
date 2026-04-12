@@ -1,6 +1,6 @@
 import json
 import os
-from config import DATA_FILE, SEEN_LINKS_FILE, ARCHIVED_LINKS_FILE, RAW_LINKS_FILE, SORTED_DIR
+from config import DATA_FILE, SEEN_LINKS_FILE, ARCHIVED_LINKS_FILE, RAW_LINKS_FILE, SORTED_DIR, WHATSAPP_LINKS_FILE
 
 SORTED_FILES = {
     "channels": f"{SORTED_DIR}/channels.txt",
@@ -204,6 +204,47 @@ def get_sorted_counts() -> dict:
         else:
             counts[key] = 0
     return counts
+
+
+def save_whatsapp_links(links: list[str]) -> int:
+    existing = set(load_whatsapp_links(normalized=True))
+    new_links = []
+    for link in links:
+        clean = link.strip()
+        if not clean:
+            continue
+        norm = normalize_link(clean)
+        if norm not in existing:
+            existing.add(norm)
+            new_links.append(clean)
+    if not new_links:
+        return 0
+    with open(WHATSAPP_LINKS_FILE, "a", encoding="utf-8") as f:
+        for link in new_links:
+            f.write(link + "\n")
+    return len(new_links)
+
+
+def load_whatsapp_links(normalized: bool = False) -> list:
+    if not os.path.exists(WHATSAPP_LINKS_FILE):
+        return []
+    result = []
+    seen = set()
+    with open(WHATSAPP_LINKS_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            link = line.strip()
+            if not link:
+                continue
+            norm = normalize_link(link)
+            if norm in seen:
+                continue
+            seen.add(norm)
+            result.append(norm if normalized else link)
+    return result
+
+
+def get_whatsapp_count() -> int:
+    return len(load_whatsapp_links())
 
 
 def load_all_known_links(joined_links: list | None = None) -> set:
