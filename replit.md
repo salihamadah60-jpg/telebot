@@ -131,7 +131,8 @@ cd bot && python -u main.py    # direct run (also has reconnect loop)
 ```
 
 ### Recent Fixes (March 2026)
-- Sorting/publishing workflow update: full sorting and inline sorting now save categorized Telegram links into local `bot/sorted/*.txt` files first. Archive channels are updated only when the owner presses “📤 نشر إلى القنوات”, which publishes batched numbered messages.
+- Sorting/publishing workflow update: full sorting and inline sorting now save categorized Telegram links into local `bot/sorted/*.txt` files first. Each saved entry includes name, specialization, member count, and link in a numbered metadata format. Archive channels are updated only when the owner presses “📤 نشر إلى القنوات”, which sends the saved organized category text.
+- Description harvesting update: when sorting inspects a group/channel description and finds additional Telegram links, those links are added back to the raw internal list for future processing.
 - WhatsApp link export: WhatsApp links are stored separately in `bot/whatsapp_links.txt` and can be downloaded from the bot with “تنزيل ملف روابط الواتساب”.
 - **Persistent progress bar**: Sorting now sends ONE message that gets edited each batch, showing a visual `▓▓▓▓░░` bar with %, counts, and Stop/Pause buttons. No more message spam.
 - **Stop/Pause/Resume** for both sorting AND harvesting.

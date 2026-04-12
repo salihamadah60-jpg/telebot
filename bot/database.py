@@ -156,14 +156,78 @@ def clear_archived() -> None:
 # Locally-sorted link files (written during sorting, cleared after publishing)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def save_sorted_link(channel_key: str, link: str) -> None:
-    """Append a sorted link to the appropriate category file."""
+def _clean_sorted_value(value) -> str:
+    text = "—" if value is None or value == "" else str(value)
+    return " ".join(text.split())
+
+
+def _extract_link_from_sorted_entry(lines: list[str]) -> str:
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("الرابط:"):
+            return stripped.split(":", 1)[1].strip()
+        if stripped.startswith("🔗 الرابط:"):
+            return stripped.split(":", 1)[1].strip()
+    if len(lines) == 1:
+        stripped = lines[0].strip()
+        if stripped.startswith(("http://", "https://", "t.me/")):
+            return stripped
+    return ""
+
+
+def _read_sorted_entries(filepath: str) -> list[dict]:
+    if not os.path.exists(filepath):
+        return []
+    entries = []
+    current = []
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.rstrip("\n")
+            if raw.strip() == "":
+                if current:
+                    link = _extract_link_from_sorted_entry(current)
+                    entries.append({"text": "\n".join(current), "link": link})
+                    current = []
+                continue
+            stripped = raw.strip()
+            if stripped.startswith(("http://", "https://", "t.me/")):
+                if current:
+                    link = _extract_link_from_sorted_entry(current)
+                    entries.append({"text": "\n".join(current), "link": link})
+                    current = []
+                entries.append({"text": stripped, "link": stripped})
+                continue
+            current.append(raw)
+    if current:
+        link = _extract_link_from_sorted_entry(current)
+        entries.append({"text": "\n".join(current), "link": link})
+    return entries
+
+
+def save_sorted_link(
+    channel_key: str,
+    link: str,
+    name: str | None = None,
+    specialty: str | None = None,
+    members=None,
+) -> None:
+    """Append a sorted link metadata entry to the appropriate category file."""
     filepath = SORTED_FILES.get(channel_key)
     if not filepath:
         return
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    index = len(_read_sorted_entries(filepath)) + 1
+    if name is None and specialty is None and members is None:
+        entry = link.strip()
+    else:
+        entry = "\n".join([
+            f"{index}- الاسم: {_clean_sorted_value(name)}",
+            f"   التخصص: {_clean_sorted_value(specialty)}",
+            f"   عدد الأعضاء: {_clean_sorted_value(members)}",
+            f"   الرابط: {link.strip()}",
+        ])
     with open(filepath, "a", encoding="utf-8") as f:
-        f.write(link.strip() + "\n")
+        f.write(entry + "\n\n")
 
 
 def load_sorted_links(channel_key: str) -> list:
@@ -173,13 +237,20 @@ def load_sorted_links(channel_key: str) -> list:
         return []
     seen = set()
     result = []
-    with open(filepath, "r", encoding="utf-8") as f:
-        for line in f:
-            lnk = line.strip()
-            if lnk and lnk not in seen:
-                seen.add(lnk)
-                result.append(lnk)
+    for entry in _read_sorted_entries(filepath):
+        lnk = entry.get("link", "").strip()
+        if lnk and lnk not in seen:
+            seen.add(lnk)
+            result.append(lnk)
     return result
+
+
+def load_sorted_message(channel_key: str) -> str:
+    filepath = SORTED_FILES.get(channel_key)
+    if not filepath or not os.path.exists(filepath):
+        return ""
+    entries = _read_sorted_entries(filepath)
+    return "\n\n".join(entry["text"] for entry in entries if entry.get("text"))
 
 
 def clear_sorted_links(channel_key: str | None = None) -> None:
@@ -199,8 +270,7 @@ def get_sorted_counts() -> dict:
     counts = {}
     for key, filepath in SORTED_FILES.items():
         if os.path.exists(filepath):
-            with open(filepath, "r", encoding="utf-8") as f:
-                counts[key] = sum(1 for line in f if line.strip())
+            counts[key] = len(_read_sorted_entries(filepath))
         else:
             counts[key] = 0
     return counts

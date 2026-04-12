@@ -57,6 +57,7 @@ from database import (
     normalize_link,
     save_sorted_link,
     load_sorted_links,
+    load_sorted_message,
     clear_sorted_links,
     save_whatsapp_links,
     SORTED_FILES,
@@ -78,12 +79,29 @@ import state as sorter_ctrl
 FLOOD_MULTIPLIER     = 2     # wait 2× the FloodWait → "safety multiplier"
 CRITICAL_FLOOD_SECS  = 600   # 10-minute FloodWait → triggers system-wide pause
 CRITICAL_PAUSE_SECS  = 1200  # 20-minute pause applied to ALL accounts on critical
-LINKS_PER_BATCH      = 40    # links bundled into a single numbered publish message
 _WHATSAPP_RE = re.compile(r"^(?:https?://)?(?:chat\.whatsapp\.com|wa\.me)/", re.IGNORECASE)
+_DESCRIPTION_TG_LINK_RE = re.compile(
+    r"(?:https?://)?t\.me/(?:joinchat/|\+)?[A-Za-z0-9_\-/]{5,}",
+    re.IGNORECASE,
+)
 
 
 def is_whatsapp_link(link: str) -> bool:
     return bool(_WHATSAPP_RE.match(link.strip()))
+
+
+def extract_telegram_links_from_description(text: str) -> list[str]:
+    found = []
+    seen = set()
+    for match in _DESCRIPTION_TG_LINK_RE.findall(text or ""):
+        link = match.strip().rstrip("/")
+        if not link.startswith("http"):
+            link = "https://" + link
+        norm = normalize_link(link)
+        if norm not in seen:
+            seen.add(norm)
+            found.append(link)
+    return found
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -646,6 +664,13 @@ async def _sequential_inspector(
                 classify_specialty(info.get("title", ""), info.get("bio", ""), info.get("username", ""))
                 if info.get("ok") else "—"
             )
+            description_links = extract_telegram_links_from_description(info.get("bio", ""))
+            if description_links:
+                async with file_lock:
+                    for discovered in description_links:
+                        discovered_norm = normalize_link(discovered)
+                        if discovered_norm != norm and discovered_norm not in seen_set and discovered_norm not in skip_normalized:
+                            extra_links.append(discovered)
 
             channel_key = route_to_channel(link, info, _is_add, med)
             report      = build_report(
@@ -660,6 +685,9 @@ async def _sequential_inspector(
             await result_queue.put({
                 "link": link, "action": "post",
                 "channel_key": channel_key, "report": report,
+                "name": info.get("title", "بدون اسم") if info.get("ok") else "—",
+                "specialty": specialty,
+                "members": info.get("members") if info.get("ok") else "—",
             })
             link_idx += 1   # ✅ success — advance to next link
             counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
@@ -772,7 +800,13 @@ async def _file_accumulator_worker(
                 seen_set.add(norm)
                 mark_seen(link)
                 try:
-                    save_sorted_link(channel_key, link)
+                    save_sorted_link(
+                        channel_key,
+                        link,
+                        name=item.get("name"),
+                        specialty=item.get("specialty"),
+                        members=item.get("members"),
+                    )
                 except Exception as _se:
                     print(f"[accumulator] file write failed {link}: {_se}")
                 # Update in-memory stats (mirrors what was in the old poster)
@@ -1063,15 +1097,17 @@ async def run_sorter(
 
     # ── Handle extra addlist-derived links ────────────────────────────────────
     if extra_links:
+        raw_existing = load_raw_links()
+        raw_norms = {normalize_link(lnk) for lnk in raw_existing}
         unique_extra = list(dict.fromkeys(
             lnk for lnk in extra_links
-            if normalize_link(lnk) not in seen_set
+            if normalize_link(lnk) not in seen_set and normalize_link(lnk) not in raw_norms
         ))
         if unique_extra:
-            all_links = load_raw_links() + unique_extra
+            all_links = raw_existing + unique_extra
             save_raw_links(all_links)
             await status_callback(
-                f"📂 تم استخراج **{len(unique_extra)}** رابط إضافي من المجلدات — أُضيفت للقائمة."
+                f"📂 تم استخراج **{len(unique_extra)}** رابط إضافي من المجلدات/الأوصاف — أُضيفت للقائمة."
             )
 
     # ── Final progress message update ─────────────────────────────────────────
@@ -1138,10 +1174,8 @@ async def publish_sorted_links(
     prog_chat_id: int | None = None,
 ) -> dict:
     """
-    Read the locally-sorted files and send batched numbered messages to Telegram
-    archive channels.  Each batch contains up to LINKS_PER_BATCH links formatted
-    as:   1- https://t.me/...
-          2- https://t.me/...
+    Read the locally-sorted files and send each category's saved numbered
+    metadata list to its Telegram archive channel in one organized message.
     On success the links are marked archived and their file is cleared.
     Returns {channel_key: {"sent": N, "failed": M}}.
     """
@@ -1177,7 +1211,8 @@ async def publish_sorted_links(
 
     for channel_key in SORTED_FILES:
         links = load_sorted_links(channel_key)
-        if not links:
+        message_text = load_sorted_message(channel_key)
+        if not links or not message_text:
             results[channel_key] = {"sent": 0, "failed": 0}
             cats_done += 1
             continue
@@ -1211,33 +1246,24 @@ async def publish_sorted_links(
             except Exception:
                 pass
 
-        # ── Batch and send ────────────────────────────────────────────────────
-        batches      = [links[i:i + LINKS_PER_BATCH] for i in range(0, len(links), LINKS_PER_BATCH)]
-        sent_count   = 0
-        failed_links = []
+        sent_count = 0
+        ok = False
+        for attempt in range(3):
+            try:
+                await poster_client.send_message(target, message_text)
+                sent_count = len(links)
+                ok = True
+                print(f"[publish] {channel_key} message sent ({len(links)} links)")
+                break
+            except FloodWaitError as fw:
+                wait = min(fw.seconds * FLOOD_MULTIPLIER, 300)
+                print(f"[publish] FloodWait {fw.seconds}s → sleeping {wait}s")
+                await asyncio.sleep(wait)
+            except Exception as _e:
+                print(f"[publish] attempt {attempt + 1} failed: {_e}")
+                await asyncio.sleep(5)
 
-        for batch_num, batch in enumerate(batches, 1):
-            numbered = "\n".join(f"{i + 1}- {lnk}" for i, lnk in enumerate(batch))
-            ok       = False
-            for attempt in range(3):
-                try:
-                    await poster_client.send_message(target, numbered)
-                    sent_count += len(batch)
-                    ok = True
-                    print(f"[publish] {channel_key} batch {batch_num}/{len(batches)} sent ({len(batch)} links)")
-                    break
-                except FloodWaitError as fw:
-                    wait = min(fw.seconds * FLOOD_MULTIPLIER, 300)
-                    print(f"[publish] FloodWait {fw.seconds}s → sleeping {wait}s")
-                    await asyncio.sleep(wait)
-                except Exception as _e:
-                    print(f"[publish] attempt {attempt + 1} failed: {_e}")
-                    await asyncio.sleep(5)
-            if not ok:
-                failed_links.extend(batch)
-
-            # Brief pause between batches to avoid rate limits
-            await asyncio.sleep(2)
+        failed_links = [] if ok else links
 
         # ── Mark successful links as archived ─────────────────────────────────
         sent_norms = {normalize_link(lnk) for lnk in links if lnk not in failed_links}
@@ -1245,10 +1271,8 @@ async def publish_sorted_links(
             if normalize_link(lnk) in sent_norms:
                 mark_archived(lnk)
 
-        # ── Rewrite sorted file with only failed links (or delete if all OK) ──
-        clear_sorted_links(channel_key)
-        for lnk in failed_links:
-            save_sorted_link(channel_key, lnk)
+        if ok:
+            clear_sorted_links(channel_key)
 
         results[channel_key] = {"sent": sent_count, "failed": len(failed_links)}
         cats_done += 1
@@ -1460,7 +1484,13 @@ async def sort_links_inline(
                 is_med      = is_medical(info.get("title", "") + " " + info.get("bio", "")) if info.get("ok") else False
                 specialty   = classify_specialty(info.get("title", "") + " " + info.get("bio", "")) if info.get("ok") else "غير مصنف"
                 channel_key = route_to_channel(link, info, is_add, is_med)
-                save_sorted_link(channel_key, link)
+                save_sorted_link(
+                    channel_key,
+                    link,
+                    name=info.get("title", "بدون اسم") if info.get("ok") else "—",
+                    specialty=specialty,
+                    members=info.get("members") if info.get("ok") else "—",
+                )
                 seen_set.add(normalize_link(link))
                 mark_seen(link)
                 db["stats"][f"ch_{channel_key}"] = db["stats"].get(f"ch_{channel_key}", 0) + 1
