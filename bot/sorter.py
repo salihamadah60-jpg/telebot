@@ -1481,8 +1481,26 @@ async def sort_links_inline(
                             result["errors"].append(link)
                             continue
 
-                is_med      = is_medical(info.get("title", "") + " " + info.get("bio", "")) if info.get("ok") else False
-                specialty   = classify_specialty(info.get("title", "") + " " + info.get("bio", "")) if info.get("ok") else "غير مصنف"
+                is_med = (
+                    is_medical(info.get("title", ""), info.get("bio", ""), info.get("username", ""))
+                    if info.get("ok") else False
+                )
+                specialty = (
+                    classify_specialty(info.get("title", ""), info.get("bio", ""), info.get("username", ""))
+                    if info.get("ok") else "غير مصنف"
+                )
+                description_links = extract_telegram_links_from_description(info.get("bio", ""))
+                if description_links:
+                    raw_existing = load_raw_links()
+                    raw_norms = {normalize_link(lnk) for lnk in raw_existing}
+                    additions = []
+                    for discovered in description_links:
+                        discovered_norm = normalize_link(discovered)
+                        if discovered_norm != normalize_link(link) and discovered_norm not in seen_set and discovered_norm not in raw_norms:
+                            additions.append(discovered)
+                            raw_norms.add(discovered_norm)
+                    if additions:
+                        save_raw_links(raw_existing + additions)
                 channel_key = route_to_channel(link, info, is_add, is_med)
                 save_sorted_link(
                     channel_key,

@@ -161,6 +161,11 @@ def _clean_sorted_value(value) -> str:
     return " ".join(text.split())
 
 
+def _clean_member_value(value) -> str:
+    text = _clean_sorted_value(value)
+    return "غير متاح" if text in {"—", "none", "None"} else text
+
+
 def _extract_link_from_sorted_entry(lines: list[str]) -> str:
     for line in lines:
         stripped = line.strip()
@@ -175,33 +180,95 @@ def _extract_link_from_sorted_entry(lines: list[str]) -> str:
     return ""
 
 
+def _extract_sorted_field(lines: list[str], field_name: str) -> str:
+    for line in lines:
+        stripped = line.strip()
+        if field_name in stripped:
+            return stripped.split(field_name, 1)[1].lstrip(":").strip()
+    return ""
+
+
+def _entry_from_lines(lines: list[str], section: str) -> dict:
+    link = _extract_link_from_sorted_entry(lines)
+    specialty = _extract_sorted_field(lines, "التخصص") or section or "طب_عام"
+    name = _extract_sorted_field(lines, "الاسم")
+    members = _extract_sorted_field(lines, "عدد الأعضاء")
+    text = "\n".join(lines)
+    return {
+        "text": text,
+        "link": link,
+        "name": name,
+        "specialty": specialty,
+        "members": members,
+    }
+
+
 def _read_sorted_entries(filepath: str) -> list[dict]:
     if not os.path.exists(filepath):
         return []
     entries = []
     current = []
+    current_section = "طب_عام"
     with open(filepath, "r", encoding="utf-8") as f:
         for line in f:
             raw = line.rstrip("\n")
             if raw.strip() == "":
                 if current:
-                    link = _extract_link_from_sorted_entry(current)
-                    entries.append({"text": "\n".join(current), "link": link})
+                    entries.append(_entry_from_lines(current, current_section))
                     current = []
                 continue
             stripped = raw.strip()
+            if stripped.startswith("## "):
+                if current:
+                    entries.append(_entry_from_lines(current, current_section))
+                    current = []
+                current_section = stripped.lstrip("#").strip() or "طب_عام"
+                continue
             if stripped.startswith(("http://", "https://", "t.me/")):
                 if current:
-                    link = _extract_link_from_sorted_entry(current)
-                    entries.append({"text": "\n".join(current), "link": link})
+                    entries.append(_entry_from_lines(current, current_section))
                     current = []
-                entries.append({"text": stripped, "link": stripped})
+                entries.append({
+                    "text": stripped,
+                    "link": stripped,
+                    "name": "",
+                    "specialty": current_section,
+                    "members": "",
+                })
                 continue
             current.append(raw)
     if current:
-        link = _extract_link_from_sorted_entry(current)
-        entries.append({"text": "\n".join(current), "link": link})
+        entries.append(_entry_from_lines(current, current_section))
     return entries
+
+
+def _format_sorted_entry(index: int, entry: dict) -> str:
+    return "\n".join([
+        f"{index}- الاسم: {_clean_sorted_value(entry.get('name'))}",
+        f"   التخصص: {_clean_sorted_value(entry.get('specialty') or 'طب_عام')}",
+        f"   عدد الأعضاء: {_clean_member_value(entry.get('members'))}",
+        f"   الرابط: {(entry.get('link') or '').strip()}",
+    ])
+
+
+def _write_sorted_entries(filepath: str, entries: list[dict]) -> None:
+    grouped: dict[str, list[dict]] = {}
+    section_order: list[str] = []
+    for entry in entries:
+        link = (entry.get("link") or "").strip()
+        if not link:
+            continue
+        section = _clean_sorted_value(entry.get("specialty") or "طب_عام")
+        if section not in grouped:
+            grouped[section] = []
+            section_order.append(section)
+        grouped[section].append(entry)
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        for section in section_order:
+            f.write(f"## {section}\n\n")
+            for index, entry in enumerate(grouped[section], 1):
+                f.write(_format_sorted_entry(index, entry) + "\n\n")
 
 
 def save_sorted_link(
@@ -216,18 +283,23 @@ def save_sorted_link(
     if not filepath:
         return
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    index = len(_read_sorted_entries(filepath)) + 1
+    entries = _read_sorted_entries(filepath)
     if name is None and specialty is None and members is None:
-        entry = link.strip()
+        entry = {
+            "link": link.strip(),
+            "name": "",
+            "specialty": "طب_عام",
+            "members": "",
+        }
     else:
-        entry = "\n".join([
-            f"{index}- الاسم: {_clean_sorted_value(name)}",
-            f"   التخصص: {_clean_sorted_value(specialty)}",
-            f"   عدد الأعضاء: {_clean_sorted_value(members)}",
-            f"   الرابط: {link.strip()}",
-        ])
-    with open(filepath, "a", encoding="utf-8") as f:
-        f.write(entry + "\n\n")
+        entry = {
+            "link": link.strip(),
+            "name": name,
+            "specialty": specialty or "طب_عام",
+            "members": members,
+        }
+    entries.append(entry)
+    _write_sorted_entries(filepath, entries)
 
 
 def load_sorted_links(channel_key: str) -> list:
@@ -250,7 +322,20 @@ def load_sorted_message(channel_key: str) -> str:
     if not filepath or not os.path.exists(filepath):
         return ""
     entries = _read_sorted_entries(filepath)
-    return "\n\n".join(entry["text"] for entry in entries if entry.get("text"))
+    grouped: dict[str, list[dict]] = {}
+    section_order: list[str] = []
+    for entry in entries:
+        section = _clean_sorted_value(entry.get("specialty") or "طب_عام")
+        if section not in grouped:
+            grouped[section] = []
+            section_order.append(section)
+        grouped[section].append(entry)
+    parts = []
+    for section in section_order:
+        parts.append(f"## {section}")
+        for index, entry in enumerate(grouped[section], 1):
+            parts.append(_format_sorted_entry(index, entry))
+    return "\n\n".join(parts)
 
 
 def clear_sorted_links(channel_key: str | None = None) -> None:
