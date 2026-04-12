@@ -48,6 +48,10 @@ from database import (
     load_seen_set,
     mark_seen,
     save_seen_set,
+    load_inspection_cache,
+    save_inspection_cache,
+    get_cached_inspection,
+    remember_inspection,
     load_archived_set,
     mark_archived,
     save_archived_set,
@@ -65,8 +69,10 @@ from database import (
 from config import (
     API_ID,
     API_HASH,
-    DELAY_MIN,
-    DELAY_MAX,
+    SORT_DELAY_MIN,
+    SORT_DELAY_MAX,
+    SORT_LIGHT_INSPECTION,
+    SORT_ADAPTIVE_DELAY_MAX_MULTIPLIER,
     MAX_CONCURRENT,
     OWNER_ID,
     BOT_ID,
@@ -108,7 +114,7 @@ def extract_telegram_links_from_description(text: str) -> list[str]:
 # Entity inspection
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _get_invite_info(client: TelegramClient, link: str) -> dict | None:
+async def _get_invite_info(client: TelegramClient, link: str, fetch_details: bool = True, fetch_members: bool = True) -> dict | None:
     """
     Use CheckChatInviteRequest to pull metadata for a private invite link.
     Works whether the account is already a member or not, and does NOT join.
@@ -128,18 +134,19 @@ async def _get_invite_info(client: TelegramClient, link: str) -> dict | None:
         if entity is not None:
             title     = getattr(entity, "title", "") or "بدون اسم"
             username  = getattr(entity, "username", "") or ""
-            members   = getattr(entity, "participants_count", None)
+            members   = getattr(entity, "participants_count", None) if fetch_members else None
             is_ch     = getattr(entity, "broadcast", False)
             is_mg     = getattr(entity, "megagroup", False)
             link_type = "channel" if is_ch else ("supergroup" if is_mg else "group")
             joined    = hasattr(result, "chat") and result.chat is not None
             bio = ""
-            try:
-                if isinstance(entity, TLChannel):
-                    full = await client(GetFullChannelRequest(entity))
-                    bio  = getattr(full.full_chat, "about", "") or ""
-            except Exception:
-                pass
+            if fetch_details:
+                try:
+                    if isinstance(entity, TLChannel):
+                        full = await client(GetFullChannelRequest(entity))
+                        bio  = getattr(full.full_chat, "about", "") or ""
+                except Exception:
+                    pass
             return {
                 "ok": True, "title": title, "username": username, "bio": bio,
                 "link_type": link_type, "members": members,
@@ -148,7 +155,7 @@ async def _get_invite_info(client: TelegramClient, link: str) -> dict | None:
         else:
             title     = getattr(result, "title", "") or "بدون اسم"
             about     = getattr(result, "about", "") or ""
-            members   = getattr(result, "participants_count", None)
+            members   = getattr(result, "participants_count", None) if fetch_members else None
             is_ch     = getattr(result, "broadcast", False)
             link_type = "channel" if is_ch else "group"
             return {
@@ -169,7 +176,12 @@ async def _get_invite_info(client: TelegramClient, link: str) -> dict | None:
 _MSG_LINK_RE = re.compile(r'^https?://t\.me/([A-Za-z0-9_]+)/(\d+)(?:\?.*)?$')
 
 
-async def get_entity_info(client: TelegramClient, link: str) -> dict:
+async def get_entity_info(
+    client: TelegramClient,
+    link: str,
+    fetch_details: bool = True,
+    fetch_members: bool = True,
+) -> dict:
     # ── Detect message links (t.me/channel/12345) — resolve the channel only ──
     msg_match = _MSG_LINK_RE.match(link.strip())
     lookup = f"https://t.me/{msg_match.group(1)}" if msg_match else link
@@ -192,7 +204,7 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
                 err_str = str(e2)
                 # fall through to normal error handling below
                 if is_invite_link(link):
-                    invite_info = await _get_invite_info(client, link)
+                    invite_info = await _get_invite_info(client, link, fetch_details=fetch_details, fetch_members=fetch_members)
                     if invite_info is not None:
                         return invite_info
                 return {
@@ -206,7 +218,7 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
             # For private invite links try CheckChatInviteRequest before giving up —
             # fetches title/member-count/type without joining.
             if is_invite_link(link):
-                invite_info = await _get_invite_info(client, link)
+                invite_info = await _get_invite_info(client, link, fetch_details=fetch_details, fetch_members=fetch_members)
                 if invite_info is not None:
                     return invite_info
             return {
@@ -225,7 +237,7 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
 
     # Explicit isinstance guards — prevents GetFullChatRequest being called on
     # a User entity if is_user is ever wrong due to a Telethon edge case.
-    if not is_user:
+    if fetch_details and not is_user:
         try:
             if isinstance(entity, TLChannel):
                 full = await client(GetFullChannelRequest(entity))
@@ -237,7 +249,7 @@ async def get_entity_info(client: TelegramClient, link: str) -> dict:
             pass
 
     link_type = detect_link_type(entity)
-    members   = getattr(entity, "participants_count", None)
+    members   = getattr(entity, "participants_count", None) if fetch_members else None
 
     joined = False
     try:
@@ -300,6 +312,8 @@ def route_to_channel(link: str, info: dict, is_add: bool, is_med: bool = True) -
         return "other"
 
     link_type = info.get("link_type", "")
+    if link_type == "bot":
+        return "bots"
     if link_type == "channel":
         return "channels"
     return "groups"
@@ -373,6 +387,30 @@ def build_report(
             lines.append(f"  … و{len(addlist_children) - 10} رابط إضافي")
 
     return "\n".join(lines)
+
+
+def _info_from_cache(cached: dict) -> dict:
+    info = dict(cached.get("info") or {})
+    info["entity"] = None
+    return info
+
+
+def _queue_payload_from_inspection(
+    link: str,
+    info: dict,
+    channel_key: str,
+    specialty: str,
+    report: str,
+) -> dict:
+    return {
+        "link": link,
+        "action": "post",
+        "channel_key": channel_key,
+        "report": report,
+        "name": info.get("title", "بدون اسم") if info.get("ok") else "—",
+        "specialty": specialty,
+        "members": info.get("members") if info.get("ok") else "—",
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -534,6 +572,7 @@ async def _sequential_inspector(
     counters: dict,
     skip_entity_ids: set,
     skip_normalized: set,
+    inspection_cache: dict,
     db: dict,
     bot_client,
     prog_msg_id: int,
@@ -552,6 +591,8 @@ async def _sequential_inspector(
 
     acc_idx  = 0   # which account is currently active
     link_idx = 0   # index into pending[]
+    delay_multiplier = 1.0
+    successes_since_flood = 0
 
     # ── Initialise display ────────────────────────────────────────────────────
     async with file_lock:
@@ -588,6 +629,7 @@ async def _sequential_inspector(
             try:
                 async with file_lock:
                     save_seen_set(seen_set)
+                    save_inspection_cache(inspection_cache)
                     save_db(db)
             except Exception:
                 pass
@@ -635,7 +677,26 @@ async def _sequential_inspector(
             counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
             continue
 
-        await asyncio.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
+        cached = get_cached_inspection(inspection_cache, link)
+        if cached:
+            info = _info_from_cache(cached)
+            channel_key = cached.get("channel_key") or route_to_channel(link, info, is_addlist_link(link), cached.get("is_medical", True))
+            specialty = cached.get("specialty") or (
+                classify_specialty(info.get("title", ""), info.get("bio", ""), info.get("username", ""))
+                if info.get("ok") else "—"
+            )
+            report = build_report(
+                link, info, specialty, channel_key,
+                "cache", cached.get("addlist_children") or None,
+            )
+            async with file_lock:
+                seen_set.add(norm)
+            await result_queue.put(_queue_payload_from_inspection(link, info, channel_key, specialty, report))
+            link_idx += 1
+            counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
+            continue
+
+        await asyncio.sleep(random.uniform(SORT_DELAY_MIN, SORT_DELAY_MAX) * delay_multiplier)
 
         # ── inspect this link ─────────────────────────────────────────────────
         try:
@@ -646,8 +707,18 @@ async def _sequential_inspector(
                 if addlist_children:
                     async with file_lock:
                         extra_links.extend(addlist_children)
-
-            info = await get_entity_info(client, link)
+                info = {
+                    "ok": True, "title": "مجلد", "username": "",
+                    "bio": "", "link_type": "addlist",
+                    "members": None, "joined": False, "entity": None,
+                }
+            else:
+                info = await get_entity_info(
+                    client,
+                    link,
+                    fetch_details=not SORT_LIGHT_INSPECTION,
+                    fetch_members=not SORT_LIGHT_INSPECTION,
+                )
 
             entity_id = getattr(info.get("entity"), "id", None)
             if entity_id and (entity_id in skip_entity_ids or entity_id == BOT_ID):
@@ -664,13 +735,14 @@ async def _sequential_inspector(
                 classify_specialty(info.get("title", ""), info.get("bio", ""), info.get("username", ""))
                 if info.get("ok") else "—"
             )
-            description_links = extract_telegram_links_from_description(info.get("bio", ""))
-            if description_links:
-                async with file_lock:
-                    for discovered in description_links:
-                        discovered_norm = normalize_link(discovered)
-                        if discovered_norm != norm and discovered_norm not in seen_set and discovered_norm not in skip_normalized:
-                            extra_links.append(discovered)
+            if not SORT_LIGHT_INSPECTION:
+                description_links = extract_telegram_links_from_description(info.get("bio", ""))
+                if description_links:
+                    async with file_lock:
+                        for discovered in description_links:
+                            discovered_norm = normalize_link(discovered)
+                            if discovered_norm != norm and discovered_norm not in seen_set and discovered_norm not in skip_normalized:
+                                extra_links.append(discovered)
 
             channel_key = route_to_channel(link, info, _is_add, med)
             report      = build_report(
@@ -681,20 +753,34 @@ async def _sequential_inspector(
             # Mark seen in-memory immediately so duplicates later in pending are skipped
             async with file_lock:
                 seen_set.add(norm)
+                remember_inspection(
+                    inspection_cache,
+                    link,
+                    info,
+                    channel_key,
+                    specialty,
+                    med,
+                    addlist_children or None,
+                )
+                if len(inspection_cache) % 25 == 0:
+                    save_inspection_cache(inspection_cache)
 
-            await result_queue.put({
-                "link": link, "action": "post",
-                "channel_key": channel_key, "report": report,
-                "name": info.get("title", "بدون اسم") if info.get("ok") else "—",
-                "specialty": specialty,
-                "members": info.get("members") if info.get("ok") else "—",
-            })
+            await result_queue.put(_queue_payload_from_inspection(link, info, channel_key, specialty, report))
             link_idx += 1   # ✅ success — advance to next link
             counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
+            successes_since_flood += 1
+            if successes_since_flood >= 25 and delay_multiplier > 1.0:
+                delay_multiplier = max(1.0, delay_multiplier * 0.9)
+                successes_since_flood = 0
 
         except FloodWaitError as e:
             flood_secs = e.seconds
             wait_time  = flood_secs * FLOOD_MULTIPLIER
+            delay_multiplier = min(
+                SORT_ADAPTIVE_DELAY_MAX_MULTIPLIER,
+                max(delay_multiplier * 1.5, delay_multiplier + 0.5),
+            )
+            successes_since_flood = 0
 
             if flood_secs > CRITICAL_FLOOD_SECS:
                 # ── Critical flood: pause ALL accounts ───────────────────────
@@ -714,6 +800,7 @@ async def _sequential_inspector(
                 try:
                     async with file_lock:
                         save_seen_set(seen_set)
+                        save_inspection_cache(inspection_cache)
                         save_db(db)
                 except Exception:
                     pass

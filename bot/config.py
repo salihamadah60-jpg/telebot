@@ -14,6 +14,7 @@ SEEN_LINKS_FILE  = "global_seen.txt"      # inspected (may or may not have been 
 ARCHIVED_LINKS_FILE = "global_archived.txt"  # ONLY links actually sent to archive channels
 RAW_LINKS_FILE   = "raw_links.json"
 WHATSAPP_LINKS_FILE = "whatsapp_links.txt"
+INSPECTION_CACHE_FILE = "inspection_cache.json"
 SESSIONS_DIR     = "sessions"
 SORTED_DIR       = "sorted"
 
@@ -1017,6 +1018,10 @@ SPECIALTIES: dict[str, list[str]] = {
 SWITCH_ACCOUNT_EVERY = 100
 DELAY_MIN            = 3.0
 DELAY_MAX            = 7.0
+SORT_DELAY_MIN       = 8.0
+SORT_DELAY_MAX       = 16.0
+SORT_LIGHT_INSPECTION = True
+SORT_ADAPTIVE_DELAY_MAX_MULTIPLIER = 4.0
 BREAK_EVERY          = 500
 BREAK_DURATION       = 300        # seconds
 

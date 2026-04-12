@@ -1,6 +1,7 @@
 import json
 import os
-from config import DATA_FILE, SEEN_LINKS_FILE, ARCHIVED_LINKS_FILE, RAW_LINKS_FILE, SORTED_DIR, WHATSAPP_LINKS_FILE
+import time
+from config import DATA_FILE, SEEN_LINKS_FILE, ARCHIVED_LINKS_FILE, RAW_LINKS_FILE, SORTED_DIR, WHATSAPP_LINKS_FILE, INSPECTION_CACHE_FILE
 
 SORTED_FILES = {
     "channels": f"{SORTED_DIR}/channels.txt",
@@ -76,6 +77,60 @@ def normalize_link(link: str) -> str:
     if link.endswith("/"):
         link = link[:-1]
     return link
+
+
+def load_inspection_cache() -> dict:
+    if not os.path.exists(INSPECTION_CACHE_FILE):
+        return {}
+    try:
+        with open(INSPECTION_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_inspection_cache(cache: dict) -> None:
+    import tempfile, shutil
+    tmp_path = INSPECTION_CACHE_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+    shutil.move(tmp_path, INSPECTION_CACHE_FILE)
+
+
+def get_cached_inspection(cache: dict, link: str) -> dict | None:
+    item = cache.get(normalize_link(link))
+    return item if isinstance(item, dict) else None
+
+
+def remember_inspection(
+    cache: dict,
+    link: str,
+    info: dict,
+    channel_key: str,
+    specialty: str,
+    is_medical_link: bool,
+    addlist_children: list[str] | None = None,
+) -> None:
+    clean_info = {
+        "ok": bool(info.get("ok")),
+        "title": info.get("title", "بدون اسم") if info.get("ok") else "—",
+        "username": info.get("username", "") or "",
+        "bio": info.get("bio", "") or "",
+        "link_type": info.get("link_type", "") or "",
+        "members": info.get("members"),
+        "joined": bool(info.get("joined")),
+        "reason": info.get("reason", "") or "",
+        "is_private": bool(info.get("is_private")),
+    }
+    cache[normalize_link(link)] = {
+        "info": clean_info,
+        "channel_key": channel_key,
+        "specialty": specialty,
+        "is_medical": bool(is_medical_link),
+        "addlist_children": addlist_children or [],
+        "cached_at": int(time.time()),
+    }
 
 
 def load_raw_links() -> list:
