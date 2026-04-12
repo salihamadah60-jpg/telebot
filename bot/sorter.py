@@ -60,6 +60,7 @@ from database import (
     save_db,
     normalize_link,
     save_sorted_link,
+    load_sorted_entries,
     load_sorted_links,
     load_sorted_message,
     clear_sorted_links,
@@ -413,6 +414,43 @@ def _queue_payload_from_inspection(
     }
 
 
+def _seed_inspection_cache_from_sorted_files(inspection_cache: dict) -> tuple[set, int]:
+    sorted_norms: set = set()
+    added = 0
+    for channel_key in SORTED_FILES:
+        for entry in load_sorted_entries(channel_key):
+            link = (entry.get("link") or "").strip()
+            if not link:
+                continue
+            norm = normalize_link(link)
+            sorted_norms.add(norm)
+            if get_cached_inspection(inspection_cache, link):
+                continue
+            info = {
+                "ok": channel_key != "broken",
+                "title": entry.get("name") or "بدون اسم",
+                "username": "",
+                "bio": entry.get("description") or "",
+                "link_type": entry.get("type") or ("channel" if channel_key == "channels" else "bot" if channel_key == "bots" else "group"),
+                "members": entry.get("members") or None,
+                "joined": False,
+                "entity": None,
+                "reason": "" if channel_key != "broken" else "محفوظ سابقاً كغير صالح",
+                "is_private": channel_key == "invite",
+            }
+            remember_inspection(
+                inspection_cache,
+                link,
+                info,
+                channel_key,
+                entry.get("specialty") or "طب_عام",
+                channel_key != "other",
+                None,
+            )
+            added += 1
+    return sorted_norms, added
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Progress bar
 # ─────────────────────────────────────────────────────────────────────────────
@@ -665,11 +703,10 @@ async def _sequential_inspector(
                 else:
                     fa[n_] = "⏸"
 
-        # ── skip already-seen / excluded links ────────────────────────────────
+        # ── skip excluded links ───────────────────────────────────────────────
         link = pending[link_idx]
         norm = normalize_link(link)
-        if norm in skip_normalized or norm in seen_set:
-            # Immediately add to seen_set so later duplicates in pending are skipped too
+        if norm in skip_normalized:
             async with file_lock:
                 seen_set.add(norm)
             await result_queue.put({"link": link, "action": "skip"})
@@ -692,6 +729,12 @@ async def _sequential_inspector(
             async with file_lock:
                 seen_set.add(norm)
             await result_queue.put(_queue_payload_from_inspection(link, info, channel_key, specialty, report))
+            link_idx += 1
+            counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
+            continue
+
+        if norm in seen_set:
+            await result_queue.put({"link": link, "action": "skip"})
             link_idx += 1
             counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
             continue
@@ -1016,6 +1059,10 @@ async def run_sorter(
     from database import load_archived_set as _load_archived
     seen_set     = load_seen_set()
     archived_set = _load_archived()
+    inspection_cache = load_inspection_cache()
+    sorted_file_norms, seeded_cache_count = _seed_inspection_cache_from_sorted_files(inspection_cache)
+    if seeded_cache_count:
+        save_inspection_cache(inspection_cache)
     _has_archived_file = bool(archived_set)   # False on first run / clean install
 
     for lnk in db.get("joined_links", []):
@@ -1025,7 +1072,8 @@ async def run_sorter(
     # Build the "skip" set: links we won't re-process
     # • If the archived file exists → skip only confirmed-archived links
     # • Otherwise → fall back to seen_set (backward compat)
-    done_norms: set = archived_set if _has_archived_file else seen_set
+    done_norms: set = set(archived_set if _has_archived_file else seen_set)
+    done_norms.update(sorted_file_norms)
 
     # ── Build exclusion sets: source links ───────────────────────────────────
     source_norm: set    = {normalize_link(s) for s in db.get("sources", [])}
@@ -1045,7 +1093,7 @@ async def run_sorter(
     del _batch_norms
     total = len(pending)
 
-    archived_already = len(archived_set) if _has_archived_file else len(seen_set)
+    archived_already = (len(archived_set) if _has_archived_file else len(seen_set)) + len(sorted_file_norms)
 
     if total == 0:
         await status_callback(
@@ -1152,6 +1200,7 @@ async def run_sorter(
             counters        = counters,
             skip_entity_ids = skip_entity_ids,
             skip_normalized = skip_normalized,
+            inspection_cache = inspection_cache,
             db              = db,
             bot_client      = bot_client,
             prog_msg_id     = prog_msg_id,
@@ -1180,6 +1229,7 @@ async def run_sorter(
     # ── Save final progress index ─────────────────────────────────────────────
     async with file_lock:
         db["progress"]["last_sorted_index"] = counters.get("last_raw_idx", start_from)
+        save_inspection_cache(inspection_cache)
         save_db(db)
 
     # ── Handle extra addlist-derived links ────────────────────────────────────

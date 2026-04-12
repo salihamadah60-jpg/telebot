@@ -141,3 +141,6 @@ cd bot && python -u main.py    # direct run (also has reconnect loop)
 - **Group extraction fix**: Added `flood_sleep_threshold=60` so Telethon auto-retries short FloodWaits during `iter_messages`, preventing mid-group extraction stops.
 - **Periodic saves**: Harvest saves every 500 newly found links (not just at the end) so partial progress is never lost.
 - **keep_alive.sh**: Development workflow now also uses keep_alive.sh with `-u` flag for unbuffered logs.
+- **Bulk sorting cache fix**: Bulk sorting now loads `inspection_cache.json` and reuses saved inspection data before any Telegram lookup. Existing locally sorted files are treated as already sorted, so pressing “فرز” does not inspect those links again.
+- **Light inspection mode**: Bulk sorting skips full descriptions and member counts by default, saves missing values as `غير متاح`, and uses adaptive delays to reduce FloodWait risk.
+- **Security migration**: Telegram credentials are configured as Replit secrets instead of plain shared environment variables.

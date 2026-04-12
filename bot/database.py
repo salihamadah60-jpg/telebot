@@ -353,8 +353,17 @@ def save_sorted_link(
             "specialty": specialty or "طب_عام",
             "members": members,
         }
+    clean = normalize_link(link)
+    entries = [existing for existing in entries if normalize_link(existing.get("link", "")) != clean]
     entries.append(entry)
     _write_sorted_entries(filepath, entries)
+
+
+def load_sorted_entries(channel_key: str) -> list[dict]:
+    filepath = SORTED_FILES.get(channel_key)
+    if not filepath or not os.path.exists(filepath):
+        return []
+    return _read_sorted_entries(filepath)
 
 
 def load_sorted_links(channel_key: str) -> list:

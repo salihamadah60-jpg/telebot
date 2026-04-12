@@ -4,3 +4,5 @@ python-dotenv
 telethon
 python-dotenv
 telethon
+python-dotenv>=1.0.1
+telethon>=1.36.0
