@@ -50,7 +50,7 @@ def load_seen_set() -> set:
     if not os.path.exists(SEEN_LINKS_FILE):
         return set()
     with open(SEEN_LINKS_FILE, "r", encoding="utf-8") as f:
-        return {line.strip() for line in f if line.strip()}
+        return {normalize_link(line.strip()) for line in f if line.strip()}
 
 
 def is_seen(link: str) -> bool:
@@ -62,7 +62,9 @@ def is_seen(link: str) -> bool:
 
 
 def mark_seen(link: str) -> None:
-    clean = normalize_link(link)
+    clean = clean_telegram_link(link) or str(link or "").strip()
+    if not clean:
+        return
     with open(SEEN_LINKS_FILE, "a", encoding="utf-8") as f:
         f.write(clean + "\n")
 
@@ -136,7 +138,10 @@ def save_inspection_cache(cache: dict) -> None:
 
 
 def get_cached_inspection(cache: dict, link: str) -> dict | None:
-    item = cache.get(normalize_link(link))
+    canonical = clean_telegram_link(link)
+    item = cache.get(canonical) if canonical else None
+    if item is None:
+        item = cache.get(normalize_link(link))
     return item if isinstance(item, dict) else None
 
 
@@ -160,7 +165,8 @@ def remember_inspection(
         "reason": info.get("reason", "") or "",
         "is_private": bool(info.get("is_private")),
     }
-    cache[normalize_link(link)] = {
+    cache_key = clean_telegram_link(link) or normalize_link(link)
+    cache[cache_key] = {
         "info": clean_info,
         "channel_key": channel_key,
         "specialty": specialty,
@@ -186,8 +192,13 @@ def save_seen_set(seen: set) -> None:
     """Bulk-write the full in-memory seen set to file (overwrites, atomic via temp)."""
     import tempfile, shutil
     tmp_path = SEEN_LINKS_FILE + ".tmp"
+    values = []
+    for link in seen:
+        clean = clean_telegram_link(link) or str(link or "").strip()
+        if clean:
+            values.append(clean)
     with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(sorted(seen)) + "\n")
+        f.write("\n".join(sorted(set(values))) + ("\n" if values else ""))
     shutil.move(tmp_path, SEEN_LINKS_FILE)
 
 
@@ -210,7 +221,9 @@ def get_raw_count() -> int:
 
 def mark_archived(link: str) -> None:
     """Record that this link was SUCCESSFULLY posted to an archive channel."""
-    clean = normalize_link(link)
+    clean = clean_telegram_link(link) or str(link or "").strip()
+    if not clean:
+        return
     with open(ARCHIVED_LINKS_FILE, "a", encoding="utf-8") as f:
         f.write(clean + "\n")
 
@@ -220,7 +233,7 @@ def load_archived_set() -> set:
     if not os.path.exists(ARCHIVED_LINKS_FILE):
         return set()
     with open(ARCHIVED_LINKS_FILE, "r", encoding="utf-8") as f:
-        return {line.strip() for line in f if line.strip()}
+        return {normalize_link(line.strip()) for line in f if line.strip()}
 
 
 def get_archived_count() -> int:
@@ -234,8 +247,13 @@ def save_archived_set(archived: set) -> None:
     """Bulk-write the full in-memory archived set to file (atomic)."""
     import tempfile, shutil
     tmp_path = ARCHIVED_LINKS_FILE + ".tmp"
+    values = []
+    for link in archived:
+        clean = clean_telegram_link(link) or str(link or "").strip()
+        if clean:
+            values.append(clean)
     with open(tmp_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(sorted(archived)) + "\n")
+        f.write("\n".join(sorted(set(values))) + ("\n" if values else ""))
     shutil.move(tmp_path, ARCHIVED_LINKS_FILE)
 
 
@@ -460,6 +478,195 @@ def get_sorted_counts() -> dict:
         else:
             counts[key] = 0
     return counts
+
+
+def _canonical_or_original(link: str) -> str:
+    clean = clean_telegram_link(link)
+    return clean or str(link or "").strip()
+
+
+def _dedupe_links(links: list) -> tuple[list[str], int, int]:
+    result = []
+    seen = set()
+    changed = 0
+    duplicates = 0
+    for link in links:
+        original = str(link or "").strip()
+        if not original:
+            continue
+        clean = _canonical_or_original(original)
+        norm = normalize_link(clean)
+        if norm in seen:
+            duplicates += 1
+            continue
+        seen.add(norm)
+        if clean != original:
+            changed += 1
+        result.append(clean)
+    return result, changed, duplicates
+
+
+def _rewrite_link_file(filepath: str) -> tuple[int, int, int]:
+    if not os.path.exists(filepath):
+        return 0, 0, 0
+    with open(filepath, "r", encoding="utf-8") as f:
+        original_links = [line.strip() for line in f if line.strip()]
+    cleaned, changed, duplicates = _dedupe_links(original_links)
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("\n".join(cleaned) + ("\n" if cleaned else ""))
+    return len(cleaned), changed, duplicates
+
+
+def _merge_cache_item(existing: dict | None, incoming: dict) -> dict:
+    if not isinstance(existing, dict):
+        return incoming
+    existing_time = existing.get("cached_at", 0) or 0
+    incoming_time = incoming.get("cached_at", 0) or 0
+    return incoming if incoming_time >= existing_time else existing
+
+
+def reformat_malformed_links(db: dict | None = None) -> dict:
+    report = {
+        "raw_total": 0,
+        "raw_changed": 0,
+        "raw_duplicates": 0,
+        "seen_total": 0,
+        "seen_changed": 0,
+        "seen_duplicates": 0,
+        "archived_total": 0,
+        "archived_changed": 0,
+        "archived_duplicates": 0,
+        "cache_total": 0,
+        "cache_changed": 0,
+        "cache_duplicates": 0,
+        "sorted_total": 0,
+        "sorted_changed": 0,
+        "sorted_duplicates": 0,
+        "db_changed": 0,
+        "db_duplicates": 0,
+    }
+
+    raw_links = load_raw_links()
+    cleaned_raw, changed, duplicates = _dedupe_links(raw_links)
+    if cleaned_raw != raw_links:
+        save_raw_links(cleaned_raw)
+    report["raw_total"] = len(cleaned_raw)
+    report["raw_changed"] = changed
+    report["raw_duplicates"] = duplicates
+
+    total, changed, duplicates = _rewrite_link_file(SEEN_LINKS_FILE)
+    report["seen_total"] = total
+    report["seen_changed"] = changed
+    report["seen_duplicates"] = duplicates
+
+    total, changed, duplicates = _rewrite_link_file(ARCHIVED_LINKS_FILE)
+    report["archived_total"] = total
+    report["archived_changed"] = changed
+    report["archived_duplicates"] = duplicates
+
+    cache = load_inspection_cache()
+    cleaned_cache = {}
+    for key, value in cache.items():
+        clean_key = _canonical_or_original(key)
+        if clean_key != key:
+            report["cache_changed"] += 1
+        if clean_key in cleaned_cache:
+            report["cache_duplicates"] += 1
+        cleaned_cache[clean_key] = _merge_cache_item(cleaned_cache.get(clean_key), value)
+    if cleaned_cache != cache:
+        save_inspection_cache(cleaned_cache)
+    report["cache_total"] = len(cleaned_cache)
+
+    for key, filepath in SORTED_FILES.items():
+        if not os.path.exists(filepath):
+            continue
+        entries = _read_sorted_entries(filepath)
+        cleaned_entries = []
+        seen = set()
+        for entry in entries:
+            original = (entry.get("link") or "").strip()
+            clean = _canonical_or_original(original)
+            norm = normalize_link(clean)
+            if norm in seen:
+                report["sorted_duplicates"] += 1
+                continue
+            seen.add(norm)
+            if clean != original:
+                report["sorted_changed"] += 1
+            updated = dict(entry)
+            updated["link"] = clean
+            cleaned_entries.append(updated)
+        _write_sorted_entries(filepath, cleaned_entries)
+        report["sorted_total"] += len(cleaned_entries)
+
+    if isinstance(db, dict):
+        for field in ("joined_links", "sources"):
+            if isinstance(db.get(field), list):
+                cleaned, changed, duplicates = _dedupe_links(db[field])
+                if cleaned != db[field]:
+                    db[field] = cleaned
+                report["db_changed"] += changed
+                report["db_duplicates"] += duplicates
+
+    return report
+
+
+def get_storage_stats(db: dict | None = None) -> dict:
+    raw_links = load_raw_links()
+    raw_norms = {normalize_link(_canonical_or_original(link)) for link in raw_links if str(link or "").strip()}
+    sorted_counts = get_sorted_counts()
+    useful_sorted_norms = set()
+    broken_norms = set()
+    for key in SORTED_FILES:
+        entries = load_sorted_entries(key)
+        target = broken_norms if key == "broken" else useful_sorted_norms
+        for entry in entries:
+            link = entry.get("link", "")
+            if link:
+                target.add(normalize_link(link))
+    archived_norms = load_archived_set()
+    source_norms = {normalize_link(link) for link in (db or {}).get("sources", [])}
+    joined_norms = {normalize_link(link) for link in (db or {}).get("joined_links", [])}
+    done_norms = archived_norms | useful_sorted_norms | joined_norms
+    retry_pending_norms = raw_norms - done_norms - source_norms
+    cache = load_inspection_cache()
+    malformed = 0
+    for link in raw_links:
+        original = str(link or "").strip()
+        clean = clean_telegram_link(original)
+        if clean and clean != original:
+            malformed += 1
+    for filepath in [SEEN_LINKS_FILE, ARCHIVED_LINKS_FILE, WHATSAPP_LINKS_FILE]:
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                for line in f:
+                    original = line.strip()
+                    clean = clean_telegram_link(original)
+                    if clean and clean != original:
+                        malformed += 1
+    for key in cache.keys():
+        clean = clean_telegram_link(key)
+        if clean and clean != key:
+            malformed += 1
+    for key in SORTED_FILES:
+        for entry in load_sorted_entries(key):
+            original = (entry.get("link") or "").strip()
+            clean = clean_telegram_link(original)
+            if clean and clean != original:
+                malformed += 1
+    return {
+        "raw_total": len(raw_links),
+        "raw_unique": len(raw_norms),
+        "sorted_counts": sorted_counts,
+        "sorted_success_total": sum(count for key, count in sorted_counts.items() if key != "broken"),
+        "broken_total": sorted_counts.get("broken", 0),
+        "archived_total": len(archived_norms),
+        "seen_total": len(load_seen_set()),
+        "cache_total": len(cache),
+        "retry_pending_total": len(retry_pending_norms),
+        "joined_total": len(joined_norms),
+        "malformed_total": malformed,
+    }
 
 
 def save_whatsapp_links(links: list[str]) -> int:
