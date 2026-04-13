@@ -58,6 +58,7 @@ from database import (
     load_raw_links,
     save_raw_links,
     save_db,
+    clean_telegram_link,
     normalize_link,
     save_sorted_link,
     load_sorted_entries,
@@ -418,6 +419,8 @@ def _seed_inspection_cache_from_sorted_files(inspection_cache: dict) -> tuple[se
     sorted_norms: set = set()
     added = 0
     for channel_key in SORTED_FILES:
+        if channel_key == "broken":
+            continue
         for entry in load_sorted_entries(channel_key):
             link = (entry.get("link") or "").strip()
             if not link:
@@ -704,7 +707,12 @@ async def _sequential_inspector(
                     fa[n_] = "⏸"
 
         # ── skip excluded links ───────────────────────────────────────────────
-        link = pending[link_idx]
+        link = clean_telegram_link(pending[link_idx])
+        if not link:
+            await result_queue.put({"link": pending[link_idx], "action": "skip"})
+            link_idx += 1
+            counters["last_raw_idx"] = pending_raw_idx[link_idx - 1] + 1
+            continue
         norm = normalize_link(link)
         if norm in skip_normalized:
             async with file_lock:
@@ -915,8 +923,9 @@ async def _file_accumulator_worker(
 
             if action in ("skip", "error"):
                 async with file_lock:
-                    seen_set.add(normalize_link(link))
-                    mark_seen(link)
+                    if action == "skip":
+                        seen_set.add(normalize_link(link))
+                        mark_seen(link)
                     counters["done"] += 1
                     if action == "error":
                         counters["errors"] += 1
@@ -1069,10 +1078,12 @@ async def run_sorter(
         seen_set.add(normalize_link(lnk))
         archived_set.add(normalize_link(lnk))   # joined links count as "done"
 
-    # Build the "skip" set: links we won't re-process
-    # • If the archived file exists → skip only confirmed-archived links
-    # • Otherwise → fall back to seen_set (backward compat)
-    done_norms: set = set(archived_set if _has_archived_file else seen_set)
+    # Build the "skip" set from durable successful outputs only:
+    # • global_archived.txt = links actually posted to archive channels
+    # • sorted/*.txt except broken.txt = links classified into a useful local file
+    # seen_set alone is not enough because old versions marked temporary errors
+    # as seen, which prevented retries after restart/redeploy.
+    done_norms: set = set(archived_set)
     done_norms.update(sorted_file_norms)
 
     # ── Build exclusion sets: source links ───────────────────────────────────
@@ -1083,17 +1094,20 @@ async def run_sorter(
     _batch_norms: set = set()
     pending: list = []
     pending_raw_idx: list = []
-    for _raw_i, lnk in enumerate(raw_links[start_from:]):
-        n_ = normalize_link(lnk)
+    for _raw_i, lnk in enumerate(raw_links):
+        clean_lnk = clean_telegram_link(lnk)
+        n_ = normalize_link(clean_lnk or lnk)
         if n_ in done_norms or n_ in skip_normalized or n_ in _batch_norms:
             continue
         _batch_norms.add(n_)
-        pending.append(lnk)
-        pending_raw_idx.append(start_from + _raw_i)
+        pending.append(clean_lnk or lnk)
+        pending_raw_idx.append(_raw_i)
     del _batch_norms
     total = len(pending)
+    resume_display_count = len(raw_links) - total
 
-    archived_already = (len(archived_set) if _has_archived_file else len(seen_set)) + len(sorted_file_norms)
+    raw_norms = {normalize_link(clean_telegram_link(lnk) or lnk) for lnk in raw_links}
+    archived_already = len(raw_norms & done_norms)
 
     if total == 0:
         await status_callback(
@@ -1153,7 +1167,7 @@ async def run_sorter(
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"👥 حسابات: **{n}** | 🔗 روابط: **{total:,}**\n"
         f"📦 مُرتَّب مسبقاً: **{archived_already:,}**\n"
-        f"{'🔄 استئناف من حيث توقفنا' if start_from > 0 else '⚡ بدء جديد'}\n"
+        f"{'🔄 استئناف من الملفات المحفوظة' if archived_already > 0 else '⚡ بدء جديد'}\n"
         f"⚙️ مضاعف الانتظار: **×{FLOOD_MULTIPLIER}** | "
         f"حد الإيقاف الحرج: **{CRITICAL_FLOOD_SECS // 60} دقائق**\n\n"
         f"💾 الروابط تُحفظ محلياً — أرسلها للقنوات لاحقاً بزر «نشر»"
@@ -1172,7 +1186,7 @@ async def run_sorter(
     reporter = asyncio.create_task(
         _progress_reporter(
             bot_client, prog_msg_id, prog_chat_id,
-            counters, total, len(raw_links), start_from, db,
+            counters, total, len(raw_links), resume_display_count, db,
         )
     ) if prog_msg_id and prog_chat_id else None
 

@@ -144,3 +144,6 @@ cd bot && python -u main.py    # direct run (also has reconnect loop)
 - **Bulk sorting cache fix**: Bulk sorting now loads `inspection_cache.json` and reuses saved inspection data before any Telegram lookup. Existing locally sorted files are treated as already sorted, so pressing “فرز” does not inspect those links again.
 - **Light inspection mode**: Bulk sorting skips full descriptions and member counts by default, saves missing values as `غير متاح`, and uses adaptive delays to reduce FloodWait risk.
 - **Security migration**: Telegram credentials are configured as Replit secrets instead of plain shared environment variables.
+- **Malformed Telegram URL cleanup**: Harvested and previously saved links such as `https://s://t.me/...`, `https://://t.me/...`, `https:////t.me/...`, and post/comment links are normalized to clean `https://t.me/...` targets before sorting.
+- **Retry-safe sorting resume**: Bulk sorting now rebuilds pending work from durable files on every run instead of trusting only `last_sorted_index`. It skips confirmed archived links and useful local sorted files, while temporary errors and `broken.txt` entries are eligible for re-checking.
+- **Retry-safe join resume**: Smart joining now normalizes saved `joined_links` before comparing, so malformed/raw variants of the same Telegram link are not joined twice after restart/redeploy.

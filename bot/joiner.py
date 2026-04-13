@@ -37,7 +37,15 @@ from config import (
     JOIN_DELAY_MIN,
     JOIN_DELAY_MAX,
 )
-from database import save_db, load_raw_links, save_raw_links, load_all_known_links, save_whatsapp_links
+from database import (
+    save_db,
+    load_raw_links,
+    save_raw_links,
+    load_all_known_links,
+    save_whatsapp_links,
+    clean_telegram_link,
+    normalize_link,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Link-detection regexes for post-join scanning
@@ -335,6 +343,12 @@ async def _account_join_worker(
     try:
         async with TelegramClient(session, API_ID, API_HASH) as client:
             for link in links_subset:
+                link = clean_telegram_link(link)
+                if not link:
+                    async with lock:
+                        counters["done"] += 1
+                        counters["failed"] += 1
+                    continue
                 # Wait out burst cooldown for this account
                 while tracker.is_in_cooldown():
                     wait = tracker.cooldown_remaining()
@@ -358,7 +372,8 @@ async def _account_join_worker(
                         tracker.record_join()
                         if "joined_links" not in db:
                             db["joined_links"] = []
-                        if link not in db["joined_links"]:
+                        joined_norms = {normalize_link(saved) for saved in db["joined_links"]}
+                        if normalize_link(link) not in joined_norms:
                             db["joined_links"].append(link)
                         save_db(db)
                         counters["success"] += 1
@@ -421,8 +436,20 @@ async def run_smart_joiner(
         await status_callback("❌ لا توجد روابط للانضمام.")
         return
 
-    already_joined = set(db.get("joined_links", []))
-    pending        = [l for l in links_to_join if l not in already_joined][:max_joins]
+    already_joined = {normalize_link(l) for l in db.get("joined_links", [])}
+    pending = []
+    pending_norms = set()
+    for link in links_to_join:
+        clean_link = clean_telegram_link(link)
+        if not clean_link:
+            continue
+        norm = normalize_link(clean_link)
+        if norm in already_joined or norm in pending_norms:
+            continue
+        pending_norms.add(norm)
+        pending.append(clean_link)
+        if len(pending) >= max_joins:
+            break
     total          = len(pending)
 
     if total == 0:

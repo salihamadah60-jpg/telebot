@@ -49,12 +49,40 @@ def detect_link_type(entity) -> str:
 
 def _normalize_link(link: str) -> str:
     """Normalize a t.me link for deduplication."""
-    link = link.strip().lower()
+    link = _clean_telegram_link(link).strip().lower()
     link = re.sub(r"^https?://", "", link)
     link = re.sub(r"^telegram\.me", "t.me", link)
     link = re.sub(r"^telegram\.dog", "t.me", link)
     link = link.rstrip("/.,;:!?\"')")
     return link
+
+
+def _clean_telegram_link(link: str) -> str:
+    text = str(link or "").strip()
+    if not text:
+        return ""
+    text = text.replace("telegram.me/", "t.me/").replace("telegram.dog/", "t.me/")
+    resolve = re.search(r"tg://resolve\?domain=([A-Za-z][A-Za-z0-9_]{4,31})", text, re.IGNORECASE)
+    if resolve:
+        return f"https://t.me/{resolve.group(1)}"
+    match = re.search(
+        r"(?:t\.me)/([A-Za-z0-9_+\-/]{3,})(?:[?][^\s\])}>'\"]*)?",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return text
+    path = match.group(1).strip("/.,;:!?\"')")
+    parts = [p for p in path.split("/") if p]
+    if not parts:
+        return ""
+    if parts[0] in {"c", "addlist", "joinchat"} and len(parts) >= 2:
+        path = "/".join(parts[:2])
+    elif parts[0].startswith("+"):
+        path = parts[0]
+    else:
+        path = parts[0]
+    return f"https://t.me/{path}"
 
 
 def extract_links_from_text(text: str, entities=None, reply_markup=None, forward_chat=None) -> list:
@@ -80,7 +108,7 @@ def extract_links_from_text(text: str, entities=None, reply_markup=None, forward
     seen_normalized: set[str] = set()
 
     def add(link: str):
-        link = link.strip().rstrip("/.,;:!?\"')")
+        link = _clean_telegram_link(link).strip().rstrip("/.,;:!?\"')")
         if not link:
             return
         if not link.startswith(("http://", "https://", "tg://")):

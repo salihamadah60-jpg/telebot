@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import time
 from config import DATA_FILE, SEEN_LINKS_FILE, ARCHIVED_LINKS_FILE, RAW_LINKS_FILE, SORTED_DIR, WHATSAPP_LINKS_FILE, INSPECTION_CACHE_FILE
 
@@ -71,8 +72,44 @@ def clear_seen() -> None:
         os.remove(SEEN_LINKS_FILE)
 
 
+_TG_LINK_RE = re.compile(
+    r"(?:t\.me|telegram\.me|telegram\.dog)/([A-Za-z0-9_+\-/]{3,})(?:[?][^\s\])}>'\"]*)?",
+    re.IGNORECASE,
+)
+_TG_RESOLVE_RE = re.compile(r"tg://resolve\?domain=([A-Za-z][A-Za-z0-9_]{4,31})", re.IGNORECASE)
+
+
+def clean_telegram_link(link: str) -> str:
+    text = str(link or "").strip()
+    if not text:
+        return ""
+    text = text.replace("telegram.me/", "t.me/").replace("telegram.dog/", "t.me/")
+    resolve = _TG_RESOLVE_RE.search(text)
+    if resolve:
+        return f"https://t.me/{resolve.group(1)}"
+    match = _TG_LINK_RE.search(text)
+    if not match:
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{4,31}", text):
+            return f"https://t.me/{text}"
+        return ""
+    path = match.group(1).strip("/.,;:!?\"')")
+    if not path:
+        return ""
+    parts = [p for p in path.split("/") if p]
+    if not parts:
+        return ""
+    if parts[0] in {"c", "addlist", "joinchat"} and len(parts) >= 2:
+        path = "/".join(parts[:2])
+    elif parts[0].startswith("+"):
+        path = parts[0]
+    else:
+        path = parts[0]
+    return f"https://t.me/{path}"
+
+
 def normalize_link(link: str) -> str:
-    link = link.strip().lower()
+    cleaned = clean_telegram_link(link)
+    link = (cleaned or str(link or "")).strip().lower()
     link = link.replace("https://", "").replace("http://", "")
     if link.endswith("/"):
         link = link[:-1]
