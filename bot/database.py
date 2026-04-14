@@ -55,10 +55,7 @@ def load_seen_set() -> set:
 
 def is_seen(link: str) -> bool:
     clean = normalize_link(link)
-    if not os.path.exists(SEEN_LINKS_FILE):
-        return False
-    with open(SEEN_LINKS_FILE, "r", encoding="utf-8") as f:
-        return clean in f.read()
+    return clean in load_seen_set()
 
 
 def mark_seen(link: str) -> None:

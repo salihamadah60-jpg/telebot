@@ -2016,36 +2016,112 @@ async def jch_other(event):
 @owner_only
 async def stats_handler(event):
     await event.answer()
+    await show_stats(event)
+
+
+@bot.on(events.NewMessage(pattern="/stats"))
+@owner_only
+async def stats_command_handler(event):
+    await show_stats(event)
+
+
+async def show_stats(target):
+    db.update(load_db())
     stats = db.get("stats", {})
-    seen  = get_seen_count()
-    raw   = get_raw_count()
-    last  = db.get("progress", {}).get("last_sorted_index", 0)
-    pct   = int(last / raw * 100) if raw else 0
+    storage = get_storage_stats(db)
+    raw = storage["raw_total"]
+    last = db.get("progress", {}).get("last_sorted_index", 0)
+    pct = int(last / raw * 100) if raw else 0
 
     bar_filled = "█" * (pct // 10)
     bar_empty  = "░" * (10 - pct // 10)
+    sorted_counts = storage["sorted_counts"]
+    sorted_lines = "\n".join(
+        f"  • {CHANNEL_KEYS.get(key, key)}: **{count:,}**"
+        for key, count in sorted_counts.items()
+    )
 
     text = (
         "📊 **إحصائيات النظام**\n"
         "━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"**الفرز:** {bar_filled}{bar_empty} {pct}%\n"
-        f"  ↳ {last:,} / {raw:,} رابط\n\n"
+        f"**تقدم المرور على الخام:** {bar_filled}{bar_empty} {pct}%\n"
+        f"  ↳ آخر موضع خام: **{last:,} / {raw:,}**\n"
+        f"  ↳ المتبقي القابل لإعادة المحاولة: **{storage['retry_pending_total']:,}**\n\n"
         f"📦 **الروابط الخام:** {raw:,}\n"
-        f"🔍 **المفحوصة:** {seen:,}\n"
-        f"✅ **المرتبة بنجاح:** {stats.get('total_sorted', 0):,}\n"
-        f"💀 **تالفة (منتهية فعلاً):** {stats.get('total_broken', 0):,}\n"
+        f"🧬 **الروابط الخام الفريدة:** {storage['raw_unique']:,}\n"
+        f"🔍 **المفحوصة/Seen:** {storage['seen_total']:,}\n"
+        f"🗄 **كاش الفحص:** {storage['cache_total']:,}\n"
+        f"📤 **المؤرشفة فعلياً:** {storage['archived_total']:,}\n"
+        f"✅ **المحفوظة في ملفات الفرز:** {storage['sorted_success_total']:,}\n"
+        f"💀 **ملف التالفة:** {storage['broken_total']:,}\n"
+        f"🤝 **تم الانضمام إليها:** {storage['joined_total']:,}\n"
+        f"🧹 **روابط تحتاج إصلاح صيغة:** {storage['malformed_total']:,}\n\n"
+        f"📂 **تفصيل ملفات الفرز:**\n{sorted_lines}\n\n"
+        f"📈 **عدادات التشغيل التاريخية:**\n"
+        f"✅ مرتبة بنجاح: {stats.get('total_sorted', 0):,}\n"
+        f"💀 تالفة أثناء التشغيل: {stats.get('total_broken', 0):,}\n"
         f"🔐 **دعوات خاصة:** {stats.get('total_invite', 0):,}\n"
-        f"⏭️ **المتخطاة (مكررة):** {stats.get('total_skipped_duplicate', 0):,}\n"
-        f"🤝 **تم الانضمام إليها:** {len(db.get('joined_links', [])):,}\n\n"
+        f"⏭️ **المتخطاة/مكررة:** {stats.get('total_skipped_duplicate', 0):,}\n\n"
         f"👤 **الحسابات:** {len(db.get('accounts', []))}\n"
         f"🔗 **المصادر:** {len(db.get('sources', []))}\n"
         f"📺 **القنوات:** {len(db.get('channels', {}))}/7\n\n"
-        f"ℹ️ **ملاحظة عن التالفة:**\n"
-        f"الروابط التالفة = يوزرنيم محذوف أو حساب غير موجود.\n"
-        f"روابط +invite التي لم ينضم إليها الحساب → قناة 🔐 الدعوات."
+        f"ℹ️ **ملاحظة:** رقم التقدم هو موضع داخل القائمة الخام، وليس عدد الروابط التي تم حفظها. "
+        f"قد يقفز عند تخطي المكرر أو المصنّف سابقاً أو روابط المصدر."
     )
 
-    await event.edit(text, buttons=[nav_row()], parse_mode="md")
+    buttons = []
+    if storage["malformed_total"]:
+        buttons.append([Button.inline("🧹 إصلاح صيغ الروابط", b"fix_malformed_links")])
+    buttons.append(nav_row())
+    try:
+        await target.edit(text, buttons=buttons, parse_mode="md")
+    except Exception:
+        await target.respond(text, buttons=buttons, parse_mode="md")
+
+
+@bot.on(events.CallbackQuery(data=b"fix_malformed_links"))
+@owner_only
+async def fix_malformed_links_handler(event):
+    await event.answer("🧹 جاري إصلاح صيغ الروابط...")
+    db.update(load_db())
+    report = reformat_malformed_links(db)
+    save_db(db)
+    text = (
+        "🧹 **تم إصلاح صيغ الروابط**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📦 الخام: أصلح **{report['raw_changed']:,}** وحذف مكرر **{report['raw_duplicates']:,}**\n"
+        f"🔍 Seen: أصلح **{report['seen_changed']:,}** وحذف مكرر **{report['seen_duplicates']:,}**\n"
+        f"📤 المؤرشف: أصلح **{report['archived_changed']:,}** وحذف مكرر **{report['archived_duplicates']:,}**\n"
+        f"🗄 الكاش: أصلح **{report['cache_changed']:,}** ودمج مكرر **{report['cache_duplicates']:,}**\n"
+        f"📂 ملفات الفرز: أصلح **{report['sorted_changed']:,}** وحذف مكرر **{report['sorted_duplicates']:,}**\n"
+        f"⚙️ ذاكرة البوت: أصلح **{report['db_changed']:,}** وحذف مكرر **{report['db_duplicates']:,}**\n\n"
+        "✅ أصبحت الروابط المخزنة بصيغة `https://t.me/...` قدر الإمكان."
+    )
+    await event.edit(
+        text,
+        buttons=[[Button.inline("📊 عرض الإحصائيات", b"stats")], nav_row()],
+        parse_mode="md",
+    )
+
+
+@bot.on(events.NewMessage(pattern="/fixlinks"))
+@owner_only
+async def fix_malformed_links_command_handler(event):
+    db.update(load_db())
+    report = reformat_malformed_links(db)
+    save_db(db)
+    await event.respond(
+        "🧹 **تم إصلاح صيغ الروابط**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📦 الخام: أصلح **{report['raw_changed']:,}** وحذف مكرر **{report['raw_duplicates']:,}**\n"
+        f"🔍 Seen: أصلح **{report['seen_changed']:,}** وحذف مكرر **{report['seen_duplicates']:,}**\n"
+        f"📤 المؤرشف: أصلح **{report['archived_changed']:,}** وحذف مكرر **{report['archived_duplicates']:,}**\n"
+        f"🗄 الكاش: أصلح **{report['cache_changed']:,}** ودمج مكرر **{report['cache_duplicates']:,}**\n"
+        f"📂 ملفات الفرز: أصلح **{report['sorted_changed']:,}** وحذف مكرر **{report['sorted_duplicates']:,}**\n"
+        f"⚙️ ذاكرة البوت: أصلح **{report['db_changed']:,}** وحذف مكرر **{report['db_duplicates']:,}**",
+        buttons=[[Button.inline("📊 عرض الإحصائيات", b"stats")], nav_row()],
+        parse_mode="md",
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
